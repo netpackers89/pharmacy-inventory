@@ -1,24 +1,36 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import './Drugs.css';
-import { Plus, Sparkles, Edit, Search, Check } from 'lucide-react';
+import { Plus, Sparkles, Edit, Search, Check, Download, Pill as PillIcon, PackagePlus, Loader2 } from 'lucide-react';
 import { medicinesAPI, suppliersAPI, aiAPI, categoriesAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
+import { useGuestGuard } from '../hooks/useGuestGuard';
+import { downloadCsv } from '../utils/csv';
+import { TableSkeleton, EmptyState, ErrorState } from '../components/Feedback';
 
-export const Drugs = ({ onOpenPOS }) => {
-  const { user } = useAuth();
-  const { toast, withLoading } = useToast();
+const PAGE_SIZE = 10;
+
+export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
+  const { user, isGuest } = useAuth();
+  const { toast } = useToast();
+  const guard = useGuestGuard();
+
   const [medicines, setMedicines] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
   const [categories, setCategories] = useState([]);
   const [subcategories, setSubcategories] = useState([]);
+  const [searchInput, setSearchInput] = useState('');
   const [searchQuery, setSearchQuery] = useState('');
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [page, setPage] = useState(1);
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
   const [editId, setEditId] = useState(null);
   const [aiLoading, setAiLoading] = useState(false);
+  const [aiNotice, setAiNotice] = useState(null);
+  const [savingMedicine, setSavingMedicine] = useState(false);
   const [addInitialStock, setAddInitialStock] = useState(false);
 
   const [isImportModalOpen, setIsImportModalOpen] = useState(false);
@@ -41,13 +53,13 @@ export const Drugs = ({ onOpenPOS }) => {
         headers.forEach((h, i) => obj[h] = values[i]?.trim());
         return obj;
       });
-      
+
       setImportLoading(true);
       try {
         const res = await medicinesAPI.previewImport(data);
         setImportPreview(res.data);
       } catch (err) {
-        toast.error('Preview failed');
+        toast.error('Unable to preview the import file.');
       }
       setImportLoading(false);
     };
@@ -61,7 +73,7 @@ export const Drugs = ({ onOpenPOS }) => {
       setImportResults(res.data);
       fetchMedicines();
     } catch (err) {
-      toast.error('Import failed');
+      toast.error('Import failed. Please check the file and try again.');
     }
     setImportLoading(false);
   };
@@ -72,6 +84,14 @@ export const Drugs = ({ onOpenPOS }) => {
     setImportResults(null);
   };
 
+  /* Debounce the search box → avoids a request per keystroke */
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearchQuery(searchInput.trim());
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
 
   const initialForm = {
     generic_name: '',
@@ -107,20 +127,79 @@ export const Drugs = ({ onOpenPOS }) => {
 
   const [formData, setFormData] = useState(initialForm);
 
+  /*
+   * Medicine list fetching with race-condition protection:
+   * only the LATEST request may update state; earlier responses
+   * (e.g. a slow stale search) are discarded.
+   */
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setLoadError(false);
+
+    medicinesAPI.getAll({ search: searchQuery })
+      .then(res => {
+        if (cancelled) return;
+        const rows = res.data;
+        // Guard against non-array payloads so rendering never crashes.
+        setMedicines(Array.isArray(rows) ? rows : []);
+        setLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        if (!cancelled) {
+          setLoadError(true);
+          setMedicines([]);
+          setLoading(false);
+        }
+      });
+
+    return () => { cancelled = true; };
+  }, [searchQuery]);
+
+  useEffect(() => {
+    // Operational dropdowns: ACTIVE suppliers and ACTIVE categories only.
+    // (Inactive master records must not be selectable for new transactions;
+    // historical records keep their real references in the database.)
+    suppliersAPI.getAll({ status: 'ACTIVE' }).then(res => setSuppliers(Array.isArray(res.data) ? res.data : [])).catch(() => {});
+    // getActive returns ACTIVE categories each containing ONLY their ACTIVE
+    // subcategories — the composite availability rule is enforced server-side.
+    categoriesAPI.getActive().then(res => setCategories(Array.isArray(res.data) ? res.data : [])).catch(() => {});
+  }, []);
+
+  /*
+   * Edit-mode safeguard: if a medicine's existing category/subcategory is
+   * inactive, keep it visible (labelled) so saving an unrelated edit does not
+   * silently erase the historical classification. New records can only pick
+   * active options.
+   */
+  const categoriesForForm = useMemo(() => {
+    const list = [...categories];
+    const assignedId = formData.category_id ? Number(formData.category_id) : null;
+    if (
+      isEditMode &&
+      assignedId &&
+      !list.some((c) => c.category_id === assignedId)
+    ) {
+      list.push({
+        category_id: assignedId,
+        name: `${formData._assignedCategoryName || `Category #${assignedId}`} (inactive — historical)`,
+        sub_categories: [],
+        _historical: true,
+      });
+    }
+    return list;
+  }, [categories, formData.category_id, formData._assignedCategoryName, isEditMode]);
+
   const fetchMedicines = () => {
     setLoading(true);
     medicinesAPI.getAll({ search: searchQuery })
-      .then(res => { setMedicines(res.data || []); setLoading(false); })
+      .then(res => {
+        setMedicines(Array.isArray(res.data) ? res.data : []);
+        setLoading(false);
+      })
       .catch(() => setLoading(false));
   };
-
-  useEffect(() => {
-    fetchMedicines();
-    suppliersAPI.getAll().then(res => setSuppliers(res.data || [])).catch(() => {});
-    categoriesAPI.getAll().then(res => {
-      setCategories(res.data || []);
-    }).catch(() => {});
-  }, [searchQuery]);
 
   // When category changes, filter subcategories
   useEffect(() => {
@@ -131,27 +210,76 @@ export const Drugs = ({ onOpenPOS }) => {
     } else {
       setSubcategories([]);
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formData.category_id, categories]);
 
+  /*
+   * Scanner hand-off: an unregistered scanned code opens the
+   * registration modal with the code pre-filled in the batch barcode.
+   */
+  useEffect(() => {
+    if (!prefillCode) return;
+    // Guests are read-only — registration is a staff action.
+    if (isGuest) {
+      toast.warning('This code is not registered. Sign in with a pharmacy account to register this medicine.');
+      if (onConsumePrefill) onConsumePrefill();
+      return;
+    }
+    setFormData(prev => ({
+      ...initialForm,
+      generic_name: prev.generic_name,
+      initial_stock: {
+        ...initialForm.initial_stock,
+        barcode: prefillCode,
+        qr_code: prefillCode,
+      },
+    }));
+    setAddInitialStock(true);
+    setIsEditMode(false);
+    setEditId(null);
+    setIsModalOpen(true);
+    if (onConsumePrefill) onConsumePrefill();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefillCode, isGuest]);
+
+  /*
+   * AI autofill: suggestions are populated into the form for review.
+   * The response is labelled (Gemini vs local template) and NEVER silently
+   * overwrites fields the user has already filled in.
+   */
   const handleAiAutofill = async () => {
     const term = formData.generic_name || formData.brand_name;
     if (!term) { toast.warning('Please enter Generic Name or Brand Name first!'); return; }
     setAiLoading(true);
+    setAiNotice(null);
     try {
       const res = await aiAPI.autofill(term, formData.dosage_form);
-      if (res.data) {
-        setFormData(prev => ({
-          ...prev,
-          description: res.data.description || prev.description,
-          indications: res.data.indication || prev.indications,
-          contraindications: res.data.contraindication || prev.contraindications,
-          side_effects: res.data.side_effects || prev.side_effects,
-          warnings: res.data.warnings || prev.warnings,
-          storage_conditions: res.data.storage_condition_patient || prev.storage_conditions
-        }));
+      const data = res.data || {};
+      // Merge only into EMPTY fields — never overwrite user-entered info.
+      setFormData(prev => ({
+        ...prev,
+        description: prev.description || data.description || '',
+        indications: prev.indications || data.indication || '',
+        contraindications: prev.contraindications || data.contraindication || '',
+        side_effects: prev.side_effects || data.side_effects || '',
+        warnings: prev.warnings || data.interactions || '',
+        storage_conditions: prev.storage_conditions || data.storage_condition_patient || ''
+      }));
+
+      if (data.ai_available === false) {
+        setAiNotice(
+          (data.fallback_reason || 'AI autofill is temporarily unavailable.') +
+          ' A generic safety template was used instead — please fill in the clinical details manually.'
+        );
+      } else if (data.source === 'GOOGLE_GEMINI') {
+        setAiNotice('AI-assisted information generated. Verify before saving or clinical use.');
       }
-    } catch (err) { console.error(err); }
-    finally { setAiLoading(false); }
+    } catch (err) {
+      const msg = err.response?.status === 503
+        ? 'AI autofill is temporarily unavailable. Please continue filling the form manually.'
+        : err.response?.data?.error || 'AI autofill failed. You can continue manually.';
+      setAiNotice(msg);
+    } finally { setAiLoading(false); }
   };
 
   const handleOpenAddModal = () => {
@@ -174,6 +302,7 @@ export const Drugs = ({ onOpenPOS }) => {
       prescription_type: med.prescription_type || 'OTC',
       category_id: med.category_id || '',
       sub_category_id: med.sub_category_id || '',
+      _assignedCategoryName: med.category_name || '',
       description: med.description || '',
       indications: med.indications || '',
       contraindications: med.contraindications || '',
@@ -190,9 +319,17 @@ export const Drugs = ({ onOpenPOS }) => {
 
   const handleSubmitForm = async (e) => {
     e.preventDefault();
+    if (savingMedicine) return; // duplicate-submission guard
+
+    // Frontend validation mirrors backend rules.
+    if (!formData.generic_name.trim() || !formData.strength.trim()) {
+      toast.warning('Generic name and strength are required.');
+      return;
+    }
+
+    setSavingMedicine(true);
     try {
       const payload = { ...formData };
-      // category_id null if not selected (allowed, FK is nullable)
       payload.category_id = formData.category_id || null;
       payload.sub_category_id = formData.sub_category_id || null;
 
@@ -212,164 +349,252 @@ export const Drugs = ({ onOpenPOS }) => {
       setIsModalOpen(false);
       fetchMedicines();
     } catch (err) {
-      toast.error('Failed to save drug: ' + (err.response?.data?.details || err.response?.data?.error || err.message));
+      // Keep the form open with values intact; show what went wrong.
+      toast.error('Unable to save drug: ' + (err.response?.data?.details || err.response?.data?.error || err.message));
+    } finally {
+      setSavingMedicine(false);
     }
   };
+
+  /* Client-side pagination over the filtered list */
+  const totalPages = Math.max(1, Math.ceil(medicines.length / PAGE_SIZE));
+  const safePage = Math.min(page, totalPages);
+  const pagedMedicines = useMemo(
+    () => medicines.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
+    [medicines, safePage]
+  );
+
+  const handleExport = () => downloadCsv({
+    rows: medicines,
+    columns: [
+      { key: 'generic_name', label: 'Generic Name' },
+      { key: 'brand_name', label: 'Brand Name' },
+      { key: 'strength', label: 'Strength' },
+      { key: 'dosage_form', label: 'Dosage Form' },
+      { key: 'manufacturer', label: 'Manufacturer' },
+      { key: 'prescription_type', label: 'Prescription Type' },
+      { key: 'category_name', label: 'Category' },
+      { key: 'stock_on_hand', label: 'Stock On Hand' },
+      { key: 'status', label: 'Status' },
+    ],
+    dataset: 'medicine-list',
+    notify: toast,
+  });
 
   const dosageForms = ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Cream', 'Ointment', 'Drops', 'Inhaler', 'Suppository', 'Powder', 'Patch'];
   const routes = ['Oral', 'IV', 'IM', 'Subcutaneous', 'Topical', 'Inhalation', 'Sublingual', 'Rectal', 'Ophthalmic', 'Otic'];
 
   return (
     <div className="drugs-page">
+      {/* ── Page header stays fixed; only the table scrolls horizontally ── */}
       <div className="page-header">
         <div className="page-title-group">
-          <h1>Drugs</h1>
-          <p>Permanent master records for medicines</p>
+          <h1>Medicines</h1>
+          <p>Permanent master records for every medicine in the pharmacy</p>
         </div>
-        <button className="btn-scan" style={{ background: '#10b981', marginRight: '10px' }} onClick={() => setIsImportModalOpen(true)}>
-          <span className="btn-scan-label">Import</span>
-        </button>
-        <button className="btn-scan" style={{ background: '#2563eb' }} onClick={handleOpenAddModal}>
-          <Plus size={16} />
-          <span className="btn-scan-label">Add New Drug</span>
-        </button>
+        <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+          <button className="btn btn-secondary" onClick={() => guard(() => setIsImportModalOpen(true))}>
+            <Download size={15} />
+            <span className="hide-sm">Import</span>
+          </button>
+          <button className="btn btn-primary" onClick={() => guard(handleOpenAddModal)}>
+            <PackagePlus size={16} />
+            Add New Drug
+          </button>
+        </div>
       </div>
 
       <div style={{ marginBottom: '1rem' }}>
-        <div className="smart-search-input-wrap" style={{ backgroundColor: '#fff' }}>
-          <Search size={16} color="#64748b" />
+        <div className="smart-search-input-wrap" style={{ maxWidth: '380px' }}>
+          <Search size={15} />
           <input
             type="text"
-            placeholder="Search drugs by name..."
-            value={searchQuery}
-            onChange={(e) => setSearchQuery(e.target.value)}
+            placeholder="Search drugs by name…"
+            value={searchInput}
+            onChange={(e) => setSearchInput(e.target.value)}
+            aria-label="Search drugs"
           />
         </div>
       </div>
 
       <div className="table-container">
-        <div style={{ overflowX: 'auto' }}>
-          <table className="custom-table">
-            <thead>
-              <tr>
-                <th>Drug Name</th>
-                <th>Strength / Form</th>
-                <th>Category</th>
-                <th>Stock</th>
-                <th>Type</th>
-                <th>Status</th>
-                <th style={{ textAlign: 'right' }}>Actions</th>
-              </tr>
-            </thead>
-            <tbody>
-              {loading ? (
-                <tr><td colSpan="7" style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>Loading drugs...</td></tr>
-              ) : medicines.length === 0 ? (
-                <tr><td colSpan="7" style={{ textAlign: 'center', padding: '2rem', color: '#64748b' }}>No drugs registered yet. Click "Add New Drug" to start.</td></tr>
-              ) : (
-                medicines.map((med) => (
-                  <tr key={med.medicine_id}>
-                    <td>
-                      <strong style={{ color: '#0f172a', display: 'block' }}>{med.generic_name}</strong>
-                      {med.brand_name && <span style={{ fontSize: '0.78rem', color: '#64748b' }}>{med.brand_name}</span>}
-                    </td>
-                    <td>{med.strength} · {med.dosage_form}</td>
-                    <td>
-                      <span className="badge badge-primary">{med.category_name || 'Uncategorized'}</span>
-                    </td>
-                    <td>
-                      <span className={`badge ${parseInt(med.stock_on_hand) === 0 ? 'badge-danger' : parseInt(med.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
-                        {med.stock_on_hand || 0}
-                      </span>
-                    </td>
-                    <td><span className="badge">{med.prescription_type}</span></td>
-                    <td>
-                      <span className={`badge ${med.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'}`}>{med.status}</span>
-                    </td>
-                    <td style={{ textAlign: 'right' }}>
-                      <button
-                        onClick={() => handleOpenEditModal(med)}
-                        style={{ background: '#eff6ff', border: '1px solid #bfdbfe', color: '#2563eb', padding: '0.35rem 0.75rem', borderRadius: '6px', cursor: 'pointer', fontSize: '0.78rem', fontWeight: 700 }}
-                      >
-                        <Edit size={13} style={{ verticalAlign: 'middle', marginRight: '3px' }} /> Edit
-                      </button>
-                    </td>
+        {loading ? (
+          <TableSkeleton rows={8} cols={[26, 18, 16, 12, 12, 12]} />
+        ) : loadError ? (
+          <ErrorState
+            title="Unable to load medicines"
+            description="Something went wrong while retrieving the medicine list."
+            onRetry={fetchMedicines}
+          />
+        ) : medicines.length === 0 ? (
+          <EmptyState
+            icon={<PillIcon size={26} />}
+            title={searchQuery ? 'No medicines match your search' : 'No drugs registered yet'}
+            description={searchQuery ? 'Try changing your search or filters.' : 'Register your first medicine to start building the directory.'}
+            actionLabel={searchQuery ? 'Clear Filters' : undefined}
+            onAction={searchQuery ? () => setSearchInput('') : undefined}
+          />
+        ) : (
+          <>
+            {/* Desktop / tablet table */}
+            <div className="table-scroll-wrap hide-mobile-table">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>Drug Name</th><th>Strength / Form</th><th>Category</th>
+                    <th>Stock</th><th>Type</th><th>Status</th><th style={{ textAlign: 'right' }}>Actions</th>
                   </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
+                </thead>
+                <tbody>
+                  {pagedMedicines.map((med) => (
+                    <tr key={med.medicine_id}>
+                      <td>
+                        <strong className="td-strong">{med.generic_name}</strong>
+                        {med.brand_name && <small className="muted-line">{med.brand_name}</small>}
+                      </td>
+                      <td>{med.strength} · {med.dosage_form}</td>
+                      <td><span className="badge badge-primary">{med.category_name || 'Uncategorized'}</span></td>
+                      <td>
+                        <span className={`badge ${parseInt(med.stock_on_hand) === 0 ? 'badge-danger' : parseInt(med.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
+                          {med.stock_on_hand || 0}
+                        </span>
+                      </td>
+                      <td><span className="badge badge-neutral">{med.prescription_type}</span></td>
+                      <td>
+                        <span className={`badge ${med.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'}`}>{med.status}</span>
+                      </td>
+                      <td style={{ textAlign: 'right' }}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => guard(() => handleOpenEditModal(med))}>
+                          <Edit size={13} /> Edit
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+
+            {/* Mobile cards */}
+            <div className="mobile-card-list show-mobile-table">
+              {pagedMedicines.map((med) => (
+                <div key={med.medicine_id} className="mobile-card stagger-item">
+                  <div className="mobile-card-head">
+                    <strong>{med.generic_name}{med.brand_name ? ` (${med.brand_name})` : ''}</strong>
+                    <span className={`badge ${parseInt(med.stock_on_hand) === 0 ? 'badge-danger' : parseInt(med.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
+                      {med.stock_on_hand || 0}
+                    </span>
+                  </div>
+                  <div className="mobile-card-meta">
+                    <span>{med.strength} · {med.dosage_form}</span>
+                    <span className={`badge ${med.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'}`}>{med.status}</span>
+                  </div>
+                  <div className="mobile-card-meta">
+                    <span className="badge badge-neutral">{med.prescription_type}</span>
+                    <span className="badge badge-primary">{med.category_name || 'Uncategorized'}</span>
+                  </div>
+                  <div className="mobile-card-actions">
+                    <button className="btn btn-secondary btn-sm" onClick={() => guard(() => handleOpenEditModal(med))}>
+                      <Edit size={13} /> Edit Drug
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="table-footer">
+              <span>
+                {medicines.length} medicine{medicines.length === 1 ? '' : 's'} · page {safePage} of {totalPages}
+              </span>
+              <div className="pagination">
+                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</button>
+                {Array.from({ length: totalPages }).slice(0, 7).map((_, i) => (
+                  <button key={i} className={safePage === i + 1 ? 'active' : ''} onClick={() => setPage(i + 1)}>
+                    {i + 1}
+                  </button>
+                ))}
+                {totalPages > 7 && <span style={{ padding: '0 4px', alignSelf: 'center' }}>…</span>}
+                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</button>
+              </div>
+              <button className="btn btn-ghost" onClick={handleExport}>
+                <Download size={15} /> Export CSV
+              </button>
+            </div>
+          </>
+        )}
       </div>
 
-      
+
+      {/* ── IMPORT MODAL ── */}
       {isImportModalOpen && (
         <div className="modal-overlay">
-          <div className="modal-card" style={{ maxWidth: '800px', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div className="modal-card" style={{ maxWidth: '800px' }}>
             <div className="modal-header">
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>Import Medicines</h2>
-              <button onClick={closeImportModal} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#64748b' }}>×</button>
+              <h2>Import Medicines</h2>
+              <button className="modal-close-btn" onClick={closeImportModal}>×</button>
             </div>
             {!importPreview && !importResults && (
-              <div style={{ padding: '2rem', textAlign: 'center', border: '2px dashed #cbd5e1', borderRadius: '10px', marginTop: '1rem' }}>
+              <div className="import-dropzone dot-grid">
                 <p>Upload CSV File</p>
-                <input type="file" accept=".csv" onChange={handleFileUpload} />
+                <input type="file" accept=".csv" onChange={handleFileUpload} aria-label="CSV file" />
               </div>
             )}
-            {importLoading && <p style={{ textAlign: 'center', padding: '1rem' }}>Loading...</p>}
+            {importLoading && (
+              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>Loading preview…</div>
+            )}
             {importPreview && !importResults && !importLoading && (
               <div>
-                <table className="custom-table" style={{ marginTop: '1rem' }}>
-                  <thead>
-                    <tr><th>Row</th><th>Medicine</th><th>Batch</th><th>Qty</th><th>Decision</th></tr>
-                  </thead>
-                  <tbody>
-                    {importPreview.map((row, i) => (
-                      <tr key={i}>
-                        <td>{row.Row || i+1}</td>
-                        <td>{row.Medicine}</td>
-                        <td>{row.Batch}</td>
-                        <td>{row.Qty}</td>
-                        <td>
-                          {row.Decision && row.Decision.includes('Existing medicine + existing batch') && '🟢 '}
-                          {row.Decision && row.Decision.includes('Existing medicine + new batch') && '🔵 '}
-                          {row.Decision && row.Decision.includes('New medicine + new batch') && '🆕 '}
-                          {row.Decision}
-                        </td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-                <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem' }}>
-                  <button onClick={handleConfirmImport} style={{ padding: '0.7rem 1.5rem', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer' }}>Confirm Import</button>
+                <div className="table-scroll-wrap">
+                  <table className="custom-table" style={{ minWidth: 480 }}>
+                    <thead>
+                      <tr><th>Row</th><th>Medicine</th><th>Batch</th><th>Qty</th><th>Decision</th></tr>
+                    </thead>
+                    <tbody>
+                      {importPreview.map((row, i) => (
+                        <tr key={i}>
+                          <td>{row.Row || i+1}</td>
+                          <td className="cell-truncate">{row.Medicine}</td>
+                          <td>{row.Batch}</td>
+                          <td>{row.Qty}</td>
+                          <td><small className="muted-line">{row.Decision}</small></td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+                <div className="confirm-actions" style={{ marginTop: '1.25rem' }}>
+                  <button className="btn btn-primary" onClick={handleConfirmImport}>Confirm Import</button>
                 </div>
               </div>
             )}
             {importResults && (
-              <div style={{ padding: '2rem', textAlign: 'center' }}>
-                <h3 style={{ color: '#10b981' }}>Import Successful!</h3>
-                <p>{importResults.message || 'Records imported.'}</p>
-                <button onClick={closeImportModal} style={{ padding: '0.5rem 1rem', background: '#2563eb', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', marginTop: '1rem' }}>Close</button>
+              <div className="empty-state">
+                <div className="empty-state__icon" style={{ color: 'var(--success)', borderColor: 'var(--success-border)' }}>
+                  <Check size={26} />
+                </div>
+                <div className="empty-state__title">Import Successful</div>
+                <div className="empty-state__desc">{importResults.message || 'Records imported.'}</div>
+                <div className="empty-state__action">
+                  <button className="btn btn-secondary" onClick={closeImportModal}>Close</button>
+                </div>
               </div>
             )}
           </div>
         </div>
       )}
 
+      {/* ── ADD / EDIT MODAL ── */}
       {isModalOpen && (
         <div className="modal-overlay">
-          <div className="modal-card" style={{ maxWidth: '820px', maxHeight: '90vh', overflowY: 'auto' }}>
+          <div className="modal-card" style={{ maxWidth: '820px' }}>
             <div className="modal-header">
-              <h2 style={{ fontSize: '1.25rem', fontWeight: 800 }}>{isEditMode ? 'Edit Drug' : 'Register New Drug'}</h2>
-              <button onClick={() => setIsModalOpen(false)} style={{ background: 'none', border: 'none', fontSize: '1.5rem', cursor: 'pointer', color: '#64748b' }}>×</button>
+              <h2>{isEditMode ? 'Edit Drug' : 'Register New Drug'}</h2>
+              <button type="button" className="modal-close-btn" onClick={() => !savingMedicine && setIsModalOpen(false)} disabled={savingMedicine} aria-label="Close">×</button>
             </div>
 
             <form onSubmit={handleSubmitForm}>
               {/* SECTION A – Basic Info */}
-              <div style={{ marginBottom: '1.5rem' }}>
-                <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '1rem', paddingBottom: '0.5rem', borderBottom: '2px solid #e2e8f0' }}>
-                  Section A — Basic Drug Information
-                </h3>
+              <div className="drug-section">
+                <h3 className="drug-section-title">Section A — Basic Drug Information</h3>
                 <div className="form-grid">
                   <div className="form-group">
                     <label>Generic Name *</label>
@@ -424,7 +649,7 @@ export const Drugs = ({ onOpenPOS }) => {
                     <select className="form-control" value={formData.category_id}
                       onChange={e => setFormData({ ...formData, category_id: e.target.value })}>
                       <option value="">— No Category —</option>
-                      {categories.map(c => <option key={c.category_id} value={c.category_id}>{c.name}</option>)}
+                      {categoriesForForm.map(c => <option key={c.category_id} value={c.category_id}>{c.name}</option>)}
                     </select>
                   </div>
                   <div className="form-group">
@@ -440,16 +665,21 @@ export const Drugs = ({ onOpenPOS }) => {
               </div>
 
               {/* SECTION B – Clinical Info */}
-              <div style={{ marginBottom: '1.5rem', background: '#f8fafc', padding: '1.25rem', borderRadius: '10px' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 }}>
-                    Section B — Clinical Information
-                  </h3>
-                  <button type="button" onClick={handleAiAutofill} disabled={aiLoading}
-                    style={{ display: 'flex', alignItems: 'center', gap: '6px', background: 'linear-gradient(135deg,#6366f1,#8b5cf6)', color: 'white', border: 'none', padding: '0.5rem 1rem', borderRadius: '8px', cursor: 'pointer', fontWeight: 700, fontSize: '0.82rem' }}>
-                    <Sparkles size={14} /> {aiLoading ? 'Filling...' : '✨ AI Autofill'}
+              <div className="drug-section tinted">
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem', flexWrap: 'wrap', gap: '0.5rem' }}>
+                  <div>
+                    <h3 className="drug-section-title" style={{ margin: 0, borderBottom: 'none', paddingBottom: 0 }}>
+                      Section B — Clinical Information
+                    </h3>
+                    <span className="form-hint">AI-assisted information — verify before saving/clinical use.</span>
+                  </div>
+                  <button type="button" onClick={handleAiAutofill} disabled={aiLoading} className="btn btn-secondary btn-sm">
+                    <Sparkles size={14} /> {aiLoading ? 'Generating…' : 'Generate with AI'}
                   </button>
                 </div>
+                {aiNotice && (
+                  <div className="auth-alert auth-alert--info" role="note" style={{ marginBottom: '1rem' }}>{aiNotice}</div>
+                )}
                 <div className="form-grid">
                   <div className="form-group full-width">
                     <label>Description</label>
@@ -486,26 +716,24 @@ export const Drugs = ({ onOpenPOS }) => {
 
               {/* SECTION C – Initial Stock (Add only) */}
               {!isEditMode && (
-                <div style={{ marginBottom: '1.5rem', border: '1.5px solid #e2e8f0', padding: '1.25rem', borderRadius: '10px' }}>
-                  <h3 style={{ fontSize: '0.95rem', fontWeight: 700, color: '#475569', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '0.5rem' }}>
-                    Section C — Initial Stock
-                  </h3>
-                  <p style={{ fontSize: '0.85rem', color: '#64748b', marginBottom: '1rem' }}>
+                <div className="drug-section outlined">
+                  <h3 className="drug-section-title">Section C — Initial Stock</h3>
+                  <p className="form-hint" style={{ marginBottom: '0.9rem' }}>
                     Do you have stock for this drug right now?
                   </p>
-                  <div style={{ display: 'flex', gap: '1rem', marginBottom: addInitialStock ? '1.5rem' : 0 }}>
+                  <div className="stock-choice-row">
                     <button type="button" onClick={() => setAddInitialStock(true)}
-                      style={{ flex: 1, padding: '0.75rem', border: addInitialStock ? '2px solid #10b981' : '1px solid #cbd5e1', borderRadius: '8px', background: addInitialStock ? '#f0fdf4' : '#fff', fontWeight: 700, color: addInitialStock ? '#065f46' : '#475569', cursor: 'pointer' }}>
-                      ✅ Yes, Add Initial Stock
+                      className={`choice-btn ${addInitialStock ? 'selected' : ''}`}>
+                      Yes, Add Initial Stock
                     </button>
                     <button type="button" onClick={() => setAddInitialStock(false)}
-                      style={{ flex: 1, padding: '0.75rem', border: !addInitialStock ? '2px solid #2563eb' : '1px solid #cbd5e1', borderRadius: '8px', background: !addInitialStock ? '#eff6ff' : '#fff', fontWeight: 700, color: !addInitialStock ? '#1d4ed8' : '#475569', cursor: 'pointer' }}>
-                      📋 No, Register Drug Only
+                      className={`choice-btn ${!addInitialStock ? 'selected' : ''}`}>
+                      No, Register Drug Only
                     </button>
                   </div>
 
                   {addInitialStock && (
-                    <div style={{ borderLeft: '4px solid #10b981', paddingLeft: '1rem' }}>
+                    <div className="initial-stock-panel fade-in">
                       <div className="form-grid">
                         <div className="form-group">
                           <label>Supplier *</label>
@@ -533,7 +761,8 @@ export const Drugs = ({ onOpenPOS }) => {
                         <div className="form-group">
                           <label>Barcode</label>
                           <input type="text" className="form-control" value={formData.initial_stock.barcode}
-                            onChange={e => setFormData({ ...formData, initial_stock: { ...formData.initial_stock, barcode: e.target.value } })} />
+                            onChange={e => setFormData({ ...formData, initial_stock: { ...formData.initial_stock, barcode: e.target.value } })}
+                            placeholder="Scanned codes land here" />
                         </div>
                         <div className="form-group">
                           <label>QR Code</label>
@@ -562,7 +791,7 @@ export const Drugs = ({ onOpenPOS }) => {
                         </div>
                         <div className="form-group">
                           <label>Buy Price (ETB) *</label>
-                          <input required type="number" step="0.01" className="form-control" value={formData.initial_stock.buy_price}
+                          <input required type="number" step="0.01" min="0" className="form-control" value={formData.initial_stock.buy_price}
                             onChange={e => {
                               const bp = parseFloat(e.target.value) || 0;
                               setFormData({ ...formData, initial_stock: { ...formData.initial_stock, buy_price: e.target.value, sell_price: (bp * 1.25).toFixed(2) } });
@@ -570,7 +799,7 @@ export const Drugs = ({ onOpenPOS }) => {
                         </div>
                         <div className="form-group">
                           <label>Sell Price (Auto +25%)</label>
-                          <input type="number" step="0.01" className="form-control" value={formData.initial_stock.sell_price}
+                          <input type="number" step="0.01" min="0" className="form-control" value={formData.initial_stock.sell_price}
                             onChange={e => setFormData({ ...formData, initial_stock: { ...formData.initial_stock, sell_price: e.target.value } })} />
                         </div>
                       </div>
@@ -579,14 +808,15 @@ export const Drugs = ({ onOpenPOS }) => {
                 </div>
               )}
 
-              <div style={{ display: 'flex', justifyContent: 'flex-end', gap: '1rem', marginTop: '1.5rem' }}>
-                <button type="button" onClick={() => setIsModalOpen(false)}
-                  style={{ padding: '0.7rem 1.5rem', border: '1px solid #cbd5e1', borderRadius: '8px', background: '#fff', cursor: 'pointer', fontWeight: 600 }}>
+              <div className="confirm-actions" style={{ marginTop: '1.5rem' }}>
+                <button type="button" className="btn btn-secondary" onClick={() => !savingMedicine && setIsModalOpen(false)} disabled={savingMedicine}>
                   Cancel
                 </button>
-                <button type="submit"
-                  style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '0.7rem 1.5rem', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontWeight: 700 }}>
-                  <Check size={16} /> {isEditMode ? 'Save Changes' : (addInitialStock ? 'Register Drug & Stock' : 'Register Drug')}
+                <button type="submit" className="btn btn-primary" disabled={savingMedicine} aria-busy={savingMedicine}>
+                  {savingMedicine ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
+                  {savingMedicine
+                    ? (isEditMode ? 'Saving Changes…' : 'Registering Drug…')
+                    : (isEditMode ? 'Save Changes' : (addInitialStock ? 'Register Drug & Stock' : 'Register Drug'))}
                 </button>
               </div>
             </form>

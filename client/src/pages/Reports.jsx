@@ -40,10 +40,10 @@ export const Reports = () => {
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', alignItems: 'center', flexWrap: 'wrap' }}>
           <input type="date" value={dateFrom} onChange={e => setDateFrom(e.target.value)}
-            style={{ padding: '0.5rem', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '0.85rem' }} />
-          <span style={{ color: '#64748b', fontWeight: 600 }}>to</span>
+            className="form-control" style={{ maxWidth: 170 }} aria-label="From date" />
+          <span style={{ color: 'var(--text-muted)', fontWeight: 600 }}>to</span>
           <input type="date" value={dateTo} onChange={e => setDateTo(e.target.value)}
-            style={{ padding: '0.5rem', border: '1px solid #cbd5e1', borderRadius: '8px', fontSize: '0.85rem' }} />
+            className="form-control" style={{ maxWidth: 170 }} aria-label="To date" />
         </div>
       </div>
 
@@ -73,9 +73,9 @@ export const Reports = () => {
 };
 
 // ─── SHARED ───────────────────────────────────────────────────────────────────
-const KPICard = ({ icon, label, value, sub, color }) => (
-  <div className="kpi-card" style={{ borderTop: `3px solid ${color}` }}>
-    <div className="kpi-icon" style={{ background: color + '20', color }}>{icon}</div>
+const KPICard = ({ icon, label, value, sub }) => (
+  <div className="kpi-card">
+    <div className="kpi-icon">{icon}</div>
     <div>
       <div className="kpi-label">{label}</div>
       <div className="kpi-value">{value}</div>
@@ -84,27 +84,44 @@ const KPICard = ({ icon, label, value, sub, color }) => (
   </div>
 );
 
-const Loading = () => <div style={{ textAlign: 'center', padding: '4rem', color: '#64748b' }}><RefreshCw size={24} style={{ animation: 'spin 1s linear infinite' }} /><p>Loading...</p></div>;
+const Loading = () => (
+  <div style={{ padding: '1.5rem 0' }} aria-busy="true">
+    {[...Array(6)].map((_, i) => (
+      <div key={i} style={{ display: 'flex', gap: '1rem', padding: '0.85rem 0', borderBottom: '1px solid var(--border)' }}>
+        <span className="skeleton" style={{ width: '18%', height: '0.8rem' }} />
+        <span className="skeleton" style={{ width: '30%', height: '0.8rem' }} />
+        <span className="skeleton" style={{ width: '14%', height: '0.8rem', marginLeft: 'auto' }} />
+      </div>
+    ))}
+  </div>
+);
 
 const ExportCSV = ({ data, filename }) => {
   const handleExport = () => {
     if (!data || !data.length) return;
     const keys = Object.keys(data[0]);
-    const csv = [keys.join(','), ...data.map(row => keys.map(k => `"${row[k] ?? ''}"`).join(','))].join('\n');
-    const blob = new Blob([csv], { type: 'text/csv' });
+    const csv = [keys.join(','), ...data.map(row => keys.map(k => {
+      const v = row[k] ?? '';
+      return /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v;
+    }).join(','))].join('\r\n');
+    const blob = new Blob(['\uFEFF' + csv], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-    const a = document.createElement('a'); a.href = url; a.download = filename; a.click();
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `net-pharma-${filename.replace(/\.csv$/, '')}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a); a.click();
+    document.body.removeChild(a);
     URL.revokeObjectURL(url);
   };
   return (
-    <button onClick={handleExport} style={{ display: 'flex', alignItems: 'center', gap: '0.35rem', padding: '0.5rem 0.9rem', background: '#10b981', color: 'white', border: 'none', borderRadius: '8px', cursor: 'pointer', fontSize: '0.82rem', fontWeight: 700 }}>
+    <button onClick={handleExport} className="btn btn-secondary" style={{ fontSize: '0.8rem', padding: '0.45rem 0.9rem' }}>
       <Download size={14} /> Export CSV
     </button>
   );
 };
 
-// ─── OVERVIEW ─────────────────────────────────────────────────────────────────
-const COLORS = ['#2563eb', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6'];
+// Muted chart palette — readable on light and dark surfaces
+const COLORS = ['#5b6472', '#15803d', '#a16207', '#b91c1c', '#334155'];
 const OverviewTab = () => {
   const [data, setData] = useState(null);
   useEffect(() => { reportsAPI.getOverview().then(r => setData(r.data)).catch(() => {}); }, []);
@@ -121,8 +138,8 @@ const OverviewTab = () => {
   return (
     <div>
       <div className="kpi-grid">
-        <KPICard icon={<DollarSign size={20}/>} label="Total Revenue" value={`ETB ${fmt(data.revenue)}`} color="#2563eb" />
-        <KPICard icon={<TrendingUp size={20}/>} label="Gross Profit" value={`ETB ${fmt(data.gross_profit)}`} sub={`Margin: ${data.gross_margin}%`} color="#10b981" />
+        <KPICard icon={<DollarSign size={20}/>} label="Total Revenue" value={`ETB ${fmt(data.revenue)}`} />
+        <KPICard icon={<TrendingUp size={20}/>} label="Gross Profit" value={`ETB ${fmt(data.gross_profit)}`} sub={`Margin: ${data.gross_margin}%`} />
         <KPICard icon={<ShoppingBag size={20}/>} label="Units Sold" value={data.units_sold?.toLocaleString()} color="#f59e0b" />
         <KPICard icon={<Package size={20}/>} label="Stock Value" value={`ETB ${fmt(data.stock_value)}`} color="#8b5cf6" />
       </div>
@@ -134,7 +151,7 @@ const OverviewTab = () => {
             {data.top_medicines.map((m, i) => (
               <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '0.75rem', padding: '0.6rem 0', borderBottom: '1px solid #f1f5f9' }}>
                 <span style={{ width: '24px', height: '24px', borderRadius: '50%', background: COLORS[i] + '20', color: COLORS[i], fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.78rem' }}>{i + 1}</span>
-                <span style={{ flex: 1, fontWeight: 600, color: '#0f172a' }}>{m.generic_name}</span>
+                <span style={{ flex: 1, fontWeight: 600, color: 'var(--text-main)' }}>{m.generic_name}</span>
                 <span className="badge badge-primary">{m.units_sold} units</span>
               </div>
             ))}
@@ -185,8 +202,8 @@ const SalesTab = ({ from, to }) => {
   return (
     <div>
       <div className="kpi-grid">
-        <KPICard icon={<DollarSign size={20}/>} label="Total Revenue" value={`ETB ${fmt(summary.total_revenue)}`} color="#2563eb" />
-        <KPICard icon={<ShoppingBag size={20}/>} label="Transactions" value={summary.transactions?.toString()} color="#10b981" />
+        <KPICard icon={<DollarSign size={20}/>} label="Total Revenue" value={`ETB ${fmt(summary.total_revenue)}`} />
+        <KPICard icon={<ShoppingBag size={20}/>} label="Transactions" value={summary.transactions?.toString()} />
         <KPICard icon={<Package size={20}/>} label="Units Sold" value={summary.units_sold?.toString()} color="#f59e0b" />
         <KPICard icon={<TrendingUp size={20}/>} label="Avg. Sale" value={`ETB ${fmt(summary.avg_sale)}`} color="#8b5cf6" />
       </div>
@@ -229,8 +246,8 @@ const InventoryTab = () => {
   return (
     <div>
       <div className="kpi-grid">
-        <KPICard icon={<Package size={20}/>} label="Total Medicines" value={summary.total_medicines?.toString()} color="#2563eb" />
-        <KPICard icon={<DollarSign size={20}/>} label="Buy Value" value={`ETB ${fmt(summary.total_buy_value)}`} color="#10b981" />
+        <KPICard icon={<Package size={20}/>} label="Total Medicines" value={summary.total_medicines?.toString()} />
+        <KPICard icon={<DollarSign size={20}/>} label="Buy Value" value={`ETB ${fmt(summary.total_buy_value)}`} />
         <KPICard icon={<TrendingUp size={20}/>} label="Sell Value" value={`ETB ${fmt(summary.total_sell_value)}`} color="#f59e0b" />
       </div>
       <div className="report-card" style={{ marginTop: '1.5rem' }}>
@@ -247,7 +264,7 @@ const InventoryTab = () => {
                 const statusLabel = stock === 0 ? '🔴 Out' : stock <= 10 ? '🟡 Low' : '🟢 OK';
                 return (
                   <tr key={i}>
-                    <td><strong>{row.generic_name}</strong> {row.brand_name && <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>({row.brand_name})</span>}<br/><span style={{ fontSize: '0.75rem', color: '#64748b' }}>{row.strength}</span></td>
+                    <td><strong>{row.generic_name}</strong> {row.brand_name && <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>({row.brand_name})</span>}<br/><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{row.strength}</span></td>
                     <td>{row.category || '—'}</td>
                     <td>{row.batches}</td>
                     <td><strong>{stock}</strong></td>
@@ -281,9 +298,9 @@ const ProfitTab = ({ from, to }) => {
   return (
     <div>
       <div className="kpi-grid">
-        <KPICard icon={<DollarSign size={20}/>} label="Revenue" value={`ETB ${fmt(data.revenue)}`} color="#2563eb" />
-        <KPICard icon={<DollarSign size={20}/>} label="Cost of Goods Sold" value={`ETB ${fmt(data.cogs)}`} color="#ef4444" />
-        <KPICard icon={<TrendingUp size={20}/>} label="Gross Profit" value={`ETB ${fmt(data.gross_profit)}`} color="#10b981" />
+        <KPICard icon={<DollarSign size={20}/>} label="Revenue" value={`ETB ${fmt(data.revenue)}`} />
+        <KPICard icon={<DollarSign size={20}/>} label="Cost of Goods Sold" value={`ETB ${fmt(data.cogs)}`} />
+        <KPICard icon={<TrendingUp size={20}/>} label="Gross Profit" value={`ETB ${fmt(data.gross_profit)}`} />
         <KPICard icon={<BarChart2 size={20}/>} label="Gross Margin" value={`${data.gross_margin}%`} color="#8b5cf6" />
       </div>
 
@@ -296,8 +313,8 @@ const ProfitTab = ({ from, to }) => {
               <XAxis dataKey="name" tick={{ fontSize: 12 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
               <Tooltip formatter={v => `ETB ${fmt(v)}`} />
-              <Bar dataKey="value" fill="#2563eb" radius={[4,4,0,0]}>
-                {chartData.map((_, i) => <Cell key={i} fill={['#2563eb','#ef4444','#10b981'][i]} />)}
+              <Bar dataKey="value" fill="var(--text-main, #16181d)" radius={[4,4,0,0]}>
+                {chartData.map((_, i) => <Cell key={i} fill={[COLORS[0], COLORS[3], COLORS[1]][i]} />)}
               </Bar>
             </BarChart>
           </ResponsiveContainer>
@@ -319,7 +336,7 @@ const ProfitTab = ({ from, to }) => {
                       <td><strong>{row.generic_name}</strong></td>
                       <td>{fmt(row.revenue)}</td>
                       <td>{fmt(row.cost)}</td>
-                      <td><strong style={{ color: '#10b981' }}>{fmt(row.profit)}</strong></td>
+                      <td><strong style={{ color: 'var(--success)' }}>{fmt(row.profit)}</strong></td>
                       <td><span className="badge badge-secondary">{margin}%</span></td>
                     </tr>
                   );
@@ -347,10 +364,10 @@ const ExpiryTab = () => {
   useEffect(() => { load(window); }, [window]);
 
   const getStatus = (days) => {
-    if (days < 0) return { label: '🔴 Expired', color: '#ef4444' };
+    if (days < 0) return { label: '🔴 Expired', color: 'var(--danger)' };
     if (days <= 30) return { label: '🟠 < 30 days', color: '#f97316' };
     if (days <= 90) return { label: '🟡 < 90 days', color: '#f59e0b' };
-    return { label: '🟢 Safe', color: '#10b981' };
+    return { label: '🟢 Safe', color: 'var(--success)' };
   };
 
   return (
@@ -358,7 +375,7 @@ const ExpiryTab = () => {
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem', flexWrap: 'wrap' }}>
         {[{ v: 'expired', l: 'Expired' }, { v: '30', l: '< 30 Days' }, { v: '60', l: '< 60 Days' }, { v: '90', l: '< 90 Days' }, { v: 'all', l: 'All Batches' }].map(o => (
           <button key={o.v} onClick={() => setWindow(o.v)}
-            style={{ padding: '0.5rem 1rem', borderRadius: '20px', border: '1px solid', borderColor: window === o.v ? '#2563eb' : '#e2e8f0', background: window === o.v ? '#2563eb' : 'white', color: window === o.v ? 'white' : '#64748b', fontWeight: 700, cursor: 'pointer', fontSize: '0.82rem' }}>
+            className={`pill-toggle ${window === o.v ? 'active' : ''}`}>
             {o.l}
           </button>
         ))}
@@ -378,7 +395,7 @@ const ExpiryTab = () => {
                     <td><strong>{row.generic_name}</strong></td>
                     <td><span className="badge badge-info">{row.batch_number}</span></td>
                     <td>{row.supplier || '—'}</td>
-                    <td style={{ whiteSpace: 'nowrap', color: parseInt(row.days_left) < 0 ? '#ef4444' : 'inherit' }}>{fmtDate(row.expiry_date)}</td>
+                    <td style={{ whiteSpace: 'nowrap', color: parseInt(row.days_left) < 0 ? 'var(--danger)' : 'inherit' }}>{fmtDate(row.expiry_date)}</td>
                     <td><strong style={{ color: s.color }}>{parseInt(row.days_left) < 0 ? `${Math.abs(row.days_left)} days ago` : `${row.days_left} days`}</strong></td>
                     <td>{row.stock_quantity}</td>
                     <td>ETB {fmt(row.value)}</td>
@@ -419,11 +436,11 @@ const MovementsTab = ({ from, to }) => {
                   <td style={{ whiteSpace: 'nowrap', fontSize: '0.8rem' }}>{new Date(row.movement_date).toLocaleString()}</td>
                   <td><span className={`badge ${row.movement_type === 'SALE' ? 'badge-primary' : row.movement_type === 'RESUPPLY' ? 'badge-success' : 'badge-warning'}`}>{row.movement_type}</span></td>
                   <td>{row.generic_name} <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>({row.batch_number})</span></td>
-                  <td><strong style={{ color: '#10b981' }}>{row.stock_in > 0 ? `+${row.stock_in}` : '—'}</strong></td>
-                  <td><strong style={{ color: '#ef4444' }}>{row.stock_out > 0 ? `-${row.stock_out}` : '—'}</strong></td>
+                  <td><strong style={{ color: 'var(--success)' }}>{row.stock_in > 0 ? `+${row.stock_in}` : '—'}</strong></td>
+                  <td><strong style={{ color: 'var(--danger)' }}>{row.stock_out > 0 ? `-${row.stock_out}` : '—'}</strong></td>
                   <td>{row.balance}</td>
                   <td>{row.user_name}</td>
-                  <td style={{ fontSize: '0.78rem', color: '#64748b' }}>{row.notes}</td>
+                  <td style={{ fontSize: '0.78rem', color: 'var(--text-muted)' }}>{row.notes}</td>
                 </tr>
               ))}
               {items.length === 0 && <tr><td colSpan="8" style={{ textAlign: 'center', padding: '2rem', color: '#94a3b8' }}>No movements in this period.</td></tr>}
@@ -449,7 +466,7 @@ const MovingTab = () => {
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem' }}>
         {[{ v: 'fast', l: '🚀 Fast Moving' }, { v: 'slow', l: '🐌 Slow Moving' }, { v: 'dead', l: '⚫ Dead Stock' }].map(o => (
           <button key={o.v} onClick={() => setSubTab(o.v)}
-            style={{ padding: '0.55rem 1rem', borderRadius: '20px', border: '1px solid', borderColor: subTab === o.v ? '#2563eb' : '#e2e8f0', background: subTab === o.v ? '#2563eb' : 'white', color: subTab === o.v ? 'white' : '#64748b', fontWeight: 700, cursor: 'pointer', fontSize: '0.85rem' }}>
+            className={`pill-toggle ${subTab === o.v ? 'active' : ''}`}>
             {o.l}
           </button>
         ))}
@@ -461,7 +478,7 @@ const MovingTab = () => {
           <tbody>
             {list.map((row, i) => (
               <tr key={i}>
-                <td><span style={{ width: '28px', height: '28px', borderRadius: '50%', background: '#eff6ff', color: '#2563eb', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.78rem' }}>{i+1}</span></td>
+                <td><span style={{ width: '28px', height: '28px', borderRadius: '50%', background: 'var(--accent-subtle)', color: 'var(--text-secondary)', fontWeight: 800, display: 'flex', alignItems: 'center', justifyContent: 'center', fontSize: '0.78rem' }}>{i+1}</span></td>
                 <td><strong>{row.generic_name}</strong> {row.brand_name && <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>({row.brand_name})</span>}</td>
                 <td><strong>{row.units_sold}</strong></td>
                 <td>{row.current_stock}</td>
@@ -496,7 +513,7 @@ const UsersTab = () => {
               <XAxis dataKey="full_name" tick={{ fontSize: 11 }} />
               <YAxis tick={{ fontSize: 11 }} tickFormatter={v => `${(v/1000).toFixed(0)}k`} />
               <Tooltip formatter={v => `ETB ${fmt(v)}`} />
-              <Bar dataKey="revenue" fill="#2563eb" radius={[4,4,0,0]} name="Revenue (ETB)" />
+              <Bar dataKey="revenue" fill="var(--text-main, #16181d)" radius={[4,4,0,0]} name="Revenue (ETB)" />
             </BarChart>
           </ResponsiveContainer>
         </div>
@@ -508,7 +525,7 @@ const UsersTab = () => {
             {users.map((row, i) => (
               <tr key={i}>
                 <td><strong>{row.full_name}</strong></td>
-                <td style={{ color: '#64748b' }}>{row.username}</td>
+                <td style={{ color: 'var(--text-muted)' }}>{row.username}</td>
                 <td><span className={`badge ${row.role === 'ADMIN' ? 'badge-primary' : 'badge-secondary'}`}>{row.role}</span></td>
                 <td>{row.transactions}</td>
                 <td>{row.units_sold}</td>
@@ -539,10 +556,10 @@ const AuditTab = ({ from, to }) => {
   useEffect(() => { load(); }, [from, to, actionFilter]);
   
   const ACTION_COLORS = {
-    CREATE: '#10b981',
+    CREATE: '#15803d',
     UPDATE: '#f59e0b',
-    DELETE: '#ef4444',
-    SALE: '#2563eb',
+    DELETE: '#b91c1c',
+    SALE: '#5b6472',
     RESUPPLY: '#8b5cf6',
     ADJUSTMENT: '#f97316',
     LOGIN: '#64748b',

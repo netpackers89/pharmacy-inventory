@@ -22,7 +22,42 @@ const initializeDB = async () => {
   let client;
   try {
     client = await pgPool.connect();
-    
+
+    /*
+     * Additive migrations for existing databases.
+     * Packaging unit system: batches record WHICH packaging unit was
+     * received (SINGLE_DOSE / STRIP / INNER_BOX / OUTER_BOX), how many
+     * single doses one of those units contains, and the prices PER THAT UNIT.
+     * stock_quantity continues to be tracked in SINGLE DOSES so all existing
+     * FEFO sale/deduction logic remains correct.
+     */
+    const safeColumns = [
+      `ALTER TABLE batches ADD COLUMN IF NOT EXISTS packaging_unit VARCHAR(20) NOT NULL DEFAULT 'SINGLE_DOSE'`,
+      `ALTER TABLE batches ADD COLUMN IF NOT EXISTS units_per_package INTEGER NOT NULL DEFAULT 1`,
+      `ALTER TABLE batches ADD COLUMN IF NOT EXISTS single_doses_received INTEGER`,
+      // Sale metadata used by POS dispensing records
+      `ALTER TABLE sales ADD COLUMN IF NOT EXISTS override_reason VARCHAR(255)`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS dose_per_admin INTEGER`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS frequency_code VARCHAR(10)`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS duration_days INTEGER`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS route_of_admin VARCHAR(20)`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS required_qty INTEGER`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS dispensing_unit VARCHAR(50)`,
+      `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS counseling_note TEXT`,
+      // Users may authenticate with an email-style username; keep a dedicated column optional
+      `ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(150)`,
+      // Master-data management: audit-friendly timestamps + optional descriptions
+      `ALTER TABLE categories ADD COLUMN IF NOT EXISTS description TEXT`,
+      `ALTER TABLE categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS description TEXT`,
+      `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+      `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+    ];
+    for (const ddl of safeColumns) {
+      try { await client.query(ddl); }
+      catch (e) { console.warn('Migration skipped:', e.message); }
+    }
+
     // Create Tables with strict schema
     await client.query(`
       CREATE TABLE IF NOT EXISTS users (

@@ -23,31 +23,36 @@ const JWT_SECRET = process.env.JWT_SECRET || 'pharm_secret_jwt_key_2026';
 
 /* ─────────────────────────────────────────────────────────────────────────── *
  *  login
- *  POST /api/auth/login  { username, password }
+ *  POST /api/auth/login  { username (email or username), password }
+ *
+ *  NET-PHARMA is an internal system: there is NO public self-registration.
+ *  Accounts are created only by administrators (see userController).
  * ─────────────────────────────────────────────────────────────────────────── */
 exports.login = async (req, res) => {
-  const { username, password } = req.body;
+  const rawIdentifier = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const password = req.body?.password;
 
   // ── 1. Basic input validation ──────────────────────────────────────────────
-  if (!username || !password) {
-    return res.status(400).json({ error: 'Username and password are required' });
+  if (!rawIdentifier || !password) {
+    return res.status(400).json({ error: 'Email/username and password are required' });
   }
 
-  // ── 2. Look up the user ────────────────────────────────────────────────────
+  // ── 2. Look up the user (identifier may be a username or email-style name) ─
   let user;
   try {
     const result = await db.query(
       `SELECT user_id, username, role, full_name, password_hash, status
-         FROM users
-        WHERE username = $1`,
-      [username]
+          FROM users
+         WHERE username = $1 OR LOWER(username) = LOWER($1)
+         LIMIT 1`,
+      [rawIdentifier]
     );
 
     if (result.rows.length === 0) {
       // Unknown user → log failed attempt (no real user_id available)
       await req.auditLog(null, 'LOGIN', 'AUTH', {
         status      : 'FAILED',
-        description : 'Failed login attempt — user not found',
+        description : `Failed login attempt — account not found for "${rawIdentifier}"`,
         ipAddress   : req.ipAddress,
         userAgent   : req.userAgent,
       });
@@ -157,6 +162,67 @@ exports.login = async (req, res) => {
 };
 
 /* ─────────────────────────────────────────────────────────────────────────── *
+ *  guestLogin
+ *  POST /api/auth/guest  { name }
+ *
+ *  NET-PHARMA Guest Mode — the visitor provides their NAME (required,
+ *  validated, sanitized). A READ-ONLY session is issued (role 'GUEST');
+ *  requireStaff/enforceGuestReadOnly reject every write request made
+ *  with this token server-side. Entry and activity are audited.
+ * ─────────────────────────────────────────────────────────────────────────── */
+exports.guestLogin = async (req, res) => {
+  // Trim, collapse whitespace and strip anything that isn't a safe name character.
+  const rawName = typeof req.body?.name === 'string' ? req.body.name : '';
+  const guestName = rawName.replace(/\s+/g, ' ').replace(/[<>]/g, '').trim();
+
+  if (!guestName || guestName.length < 2 || guestName.length > 60) {
+    return res.status(400).json({ error: 'Please enter your full name (2–60 characters) to continue as guest.' });
+  }
+
+  try {
+    const username = `guest:${guestName.toLowerCase()}`;
+
+    // Short-lived read-only guest token (no DB user row, no session row needed
+    // because guests can never mutate anything).
+    const token = jwt.sign(
+      {
+        user_id   : null,
+        id        : null,
+        username  : username,
+        full_name : guestName,
+        role      : 'GUEST',
+        is_guest  : true,
+      },
+      JWT_SECRET,
+      { expiresIn: '12h' }
+    );
+
+    await req.auditLog(null, 'GUEST_LOGIN', 'AUTH', {
+      status      : 'SUCCESS',
+      description : `Guest "${guestName}" entered view-only mode`,
+      ipAddress   : req.ipAddress,
+      userAgent   : req.userAgent,
+    });
+
+    return res.json({
+      message: 'Guest session started',
+      token,
+      user: {
+        user_id   : null,
+        id        : null,
+        username  : username,
+        full_name : guestName,
+        role      : 'GUEST',
+        is_guest  : true,
+      },
+    });
+  } catch (err) {
+    console.error('[GUEST_LOGIN] Error:', err.message);
+    return res.status(500).json({ error: 'Server error while starting guest session' });
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────────────────── *
  *  logout
  *  POST /api/auth/logout  { session_id? }   (also falls back to req.user)
  * ─────────────────────────────────────────────────────────────────────────── */
@@ -232,49 +298,4 @@ exports.refreshActivity = async (req, res) => {
  * ─────────────────────────────────────────────────────────────────────────── */
 exports.getCurrentUser = (req, res) => {
   return res.json({ user: req.user });
-};
-
-
-/* ─────────────────────────────────────────────────────────────────────────── *
- *  signup
- *  POST /api/auth/signup  { username, password, full_name, role }
- * ─────────────────────────────────────────────────────────────────────────── */
-exports.signup = async (req, res) => {
-  const { username, password, full_name, role = 'USER' } = req.body;
-
-  if (!username || !password || !full_name) {
-    return res.status(400).json({ error: 'Username, password, and full name are required' });
-  }
-
-  try {
-    // Check if user already exists
-    const existingUser = await db.query(
-      `SELECT user_id FROM users WHERE username = $1`,
-      [username]
-    );
-
-    if (existingUser.rows.length > 0) {
-      return res.status(409).json({ error: 'Username already taken' });
-    }
-
-    // Hash password
-    const salt = await bcrypt.genSalt(10);
-    const passwordHash = await bcrypt.hash(password, salt);
-
-    // Insert new user
-    const newUser = await db.query(
-      `INSERT INTO users (username, password_hash, full_name, role, status)
-       VALUES ($1, $2, $3, $4, 'ACTIVE')
-       RETURNING user_id, username, role, full_name`,
-      [username, passwordHash, full_name, role]
-    );
-
-    return res.status(201).json({
-      message: 'User registered successfully',
-      user: newUser.rows[0],
-    });
-  } catch (err) {
-    console.error('[SIGNUP] Error:', err.message);
-    return res.status(500).json({ error: 'Server error during registration' });
-  }
 };

@@ -55,7 +55,7 @@ export const Users = () => {
           <h1>Staff User Accounts & Access Control</h1>
           <p>Manage system access for Admin and Pharmacist roles</p>
         </div>
-        <button className="btn-scan" style={{ background: '#2563eb' }} onClick={handleOpenAdd}>
+        <button className="btn btn-primary" onClick={handleOpenAdd}>
           <Plus size={18} /> Add New User
         </button>
       </div>
@@ -75,7 +75,7 @@ export const Users = () => {
             {usersList.map(u => (
               <tr key={u.id}>
                 <td><span className="badge badge-info">USR-00{u.id}</span></td>
-                <td><strong style={{ color: '#0f172a' }}>{u.username}</strong></td>
+                <td><strong className="td-strong">{u.username}</strong></td>
                 <td>
                   <span className={`badge ${u.role === 'admin' ? 'badge-primary' : 'badge-secondary'}`}>
                     <ShieldCheck size={14} /> {u.role ? u.role.toUpperCase() : 'PHARMACIST'}
@@ -139,7 +139,7 @@ export const Users = () => {
                 <button type="button" onClick={() => setIsModalOpen(false)} style={{ padding: '0.6rem 1rem', border: '1px solid #cbd5e1', borderRadius: '8px', background: '#fff', cursor: 'pointer' }}>
                   Cancel
                 </button>
-                <button type="submit" className="btn-scan" style={{ background: '#2563eb' }}>
+                <button type="submit" className="btn btn-primary">
                   Save User Account
                 </button>
               </div>

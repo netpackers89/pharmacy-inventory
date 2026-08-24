@@ -1,184 +1,163 @@
-const express = require('express');
-const router = express.Router();
+/**
+ * aiService.js
+ *
+ * Google Gemini integration for NET-PHARMA.
+ *
+ * Authentication notes (root-cause of the previous 401
+ * ACCESS_TOKEN_TYPE_UNSUPPORTED):
+ *   - The Generative Language API expects an API KEY, never an OAuth bearer
+ *     token. We send the key via the `x-goog-api-key` HEADER (recommended)
+ *     instead of concatenating it into the URL, and we validate the format
+ *     before calling so an OAuth token pasted into GEMINI_API_KEY produces a
+ *     clear configuration error instead of a cryptic 401.
+ *   - All requests have a hard timeout so the UI never hangs.
+ *   - On ANY failure the service returns an honest fallback:
+ *     { ..., source: 'LOCAL_FALLBACK', ai_available: false }.
+ *     We NEVER fabricate output and claim Gemini produced it.
+ */
 
-// -------------------------------------------------------------------
-// Gemini API Configuration
-// -------------------------------------------------------------------
-// Read exclusively from environment variables to keep credentials safe
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
+const GEMINI_API_KEY = (process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || '').trim();
+const GEMINI_MODEL = process.env.GEMINI_MODEL || 'gemini-2.0-flash';
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/${GEMINI_MODEL}:generateContent`;
+const REQUEST_TIMEOUT_MS = Number(process.env.GEMINI_TIMEOUT_MS || 15000);
 
-// Using gemini-2.5-flash endpoint
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY || '')}`;
+// API keys look like "AIza…"; OAuth tokens start with "ya29." — reject those early.
+const looksLikeApiKey = (key) => /^AIza[\w-]{20,}$/.test(key) || /^[A-Za-z0-9_-]{30,}$/.test(key);
+const isOAuthToken = (key) => /^ya29\./.test(key) || /^EAA/.test(key);
 
-// Helper function for standard API fetch with error handling
-async function fetchGeminiAPI(prompt, isJson = false) {
+class AiConfigError extends Error {}
+class AiUnavailableError extends Error {}
+
+async function fetchGeminiAPI(prompt, { isJson = false } = {}) {
   if (!GEMINI_API_KEY) {
-    throw new Error('GEMINI_API_KEY is missing in environment variables');
+    throw new AiConfigError('GEMINI_API_KEY is not configured on the server.');
+  }
+  if (isOAuthToken(GEMINI_API_KEY)) {
+    throw new AiConfigError(
+      'GEMINI_API_KEY contains an OAuth access token. Provide a Generative Language API key (starts with "AIza…") instead.'
+    );
+  }
+  if (!looksLikeApiKey(GEMINI_API_KEY)) {
+    throw new AiConfigError('GEMINI_API_KEY does not look like a valid API key.');
   }
 
   const payload = {
-    contents: [{ parts: [{ text: prompt }] }]
+    contents: [{ parts: [{ text: prompt }] }],
+    generationConfig: {
+      temperature: 0.3,
+      maxOutputTokens: 1024,
+      ...(isJson ? { responseMimeType: 'application/json' } : {}),
+    },
   };
 
-  if (isJson) {
-    payload.generationConfig = {
-      responseMimeType: "application/json"
-    };
-  }
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
 
-  const response = await fetch(GEMINI_URL, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  });
+  let response;
+  try {
+    response = await fetch(GEMINI_URL, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'x-goog-api-key': GEMINI_API_KEY,
+      },
+      body: JSON.stringify(payload),
+      signal: controller.signal,
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw new AiUnavailableError('AI request timed out.');
+    throw new AiUnavailableError('AI service is unreachable.');
+  }
+  clearTimeout(timer);
 
   if (!response.ok) {
-    const errorBody = await response.text();
-    throw new Error(`Gemini API error ${response.status}: ${errorBody}`);
+    const status = response.status;
+    let detail = '';
+    try { detail = (await response.text()).slice(0, 300); } catch (_) {}
+
+    if (status === 401 || status === 403) {
+      throw new AiConfigError(`Gemini rejected the API key (${status}). ${detail}`);
+    }
+    if (status === 429) {
+      throw new AiUnavailableError('AI rate limit reached. Try again shortly.');
+    }
+    throw new AiUnavailableError(`Gemini error ${status}. ${detail}`);
   }
 
   const data = await response.json();
-  return data.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  const text = data?.candidates?.[0]?.content?.parts?.[0]?.text || null;
+  if (!text) throw new AiUnavailableError('AI returned an empty response.');
+  return text;
 }
 
-// -------------------------------------------------------------------
-// Fallback Data Generators
-// -------------------------------------------------------------------
-function getFallbackAutofill(name, dosageForm = '') {
+/* ────────────────────────────────────────────────────────────────────────── *
+ * Local structured fallback — clearly labelled, generic safety text only.
+ * This is NOT presented as AI output; the client shows it as
+ * "AI unavailable — local template" so staff know to verify manually.
+ * ────────────────────────────────────────────────────────────────────────── */
+function getLocalFallback(name, dosageForm = '') {
   const formattedName = name ? name.trim() : 'Medication';
   return {
-    description: `${formattedName} is a pharmaceutical product formulated as a ${dosageForm || 'dosage unit'} intended for therapeutic administration.`,
-    indication: `Indicated for clinical management of conditions responsive to ${formattedName} therapy under medical guidance.`,
-    contraindication: `Contraindicated in patients with known hypersensitivity to ${formattedName} or any of its active components.`,
-    pregnancy_lactation: `Use during pregnancy and breastfeeding only if the potential benefit justifies the potential risk to the fetus/infant. Consult prescribing clinician.`,
-    interactions: `May interact with concomitant medications. Perform comprehensive drug regimen review prior to co-administration.`,
-    side_effects: `Gastrointestinal upset, mild headache, dizziness, localized skin rash or allergic reactions may occur.`,
-    storage_condition_patient: `Store in original container below 25°C (77°F). Protect from heat, direct light, and high humidity. Keep out of reach of children.`,
-    source: 'Fallback AI Predictive Engine'
+    description: `${formattedName} is a pharmaceutical product formulated as a ${dosageForm || 'dosage unit'} intended for therapeutic administration under professional supervision.`,
+    indication: `Indicated for clinical management of conditions responsive to ${formattedName} therapy, as directed by the prescriber.`,
+    contraindication: `Contraindicated in patients with known hypersensitivity to ${formattedName} or any component of the formulation. Review the full product literature before use.`,
+    pregnancy_lactation: `Use during pregnancy or breastfeeding only if the potential benefit justifies the potential risk. Consult the prescribing clinician.`,
+    interactions: `May interact with other medications. Perform a complete drug-regimen review before co-administration.`,
+    side_effects: `Possible side effects include gastrointestinal upset, headache, dizziness, or allergic reactions. Refer to the approved product information for the full list.`,
+    storage_condition_patient: `Store in the original container below 25°C, protected from moisture and direct light. Keep out of reach of children.`,
+    source: 'LOCAL_FALLBACK',
+    ai_available: false,
   };
 }
 
-// -------------------------------------------------------------------
-// AI Service Functions
-// -------------------------------------------------------------------
+async function parseJsonResponse(prompt) {
+  const textResult = await fetchGeminiAPI(prompt, { isJson: true });
+  try {
+    return JSON.parse(textResult);
+  } catch (_) {
+    // Tolerate fenced code blocks
+    const cleaned = String(textResult).replace(/```json|```/g, '').trim();
+    return JSON.parse(cleaned);
+  }
+}
+
+/* ── Autofill ── */
 async function autofillMedicineDetails(name, dosageForm = '') {
-  if (!name) return getFallbackAutofill(name, dosageForm);
+  if (!name) return getLocalFallback(name, dosageForm);
 
-  const prompt = `You are a clinical pharmacist AI. Provide accurate pharmacological details for the medication: "${name}" (Dosage form: ${dosageForm}).
-  Return a JSON object with these exact keys:
-  {
-    "description": "Brief description of drug class and mechanism",
-    "indication": "Main clinical indications",
-    "contraindication": "Major contraindications",
-    "pregnancy_lactation": "Pregnancy and lactation safety",
-    "interactions": "Key drug interactions",
-    "side_effects": "Common and severe side effects",
-    "storage_condition_patient": "Storage instructions for patient"
-  }`;
-
-  try {
-    const textResult = await fetchGeminiAPI(prompt, true);
-    if (textResult) {
-      const parsed = JSON.parse(textResult);
-      return { ...parsed, source: 'Google Gemini Clinical AI' };
-    }
-  } catch (err) {
-    console.error('Gemini Autofill Error:', err.message);
-  }
-
-  return getFallbackAutofill(name, dosageForm);
+  const prompt = `You are a clinical pharmacist reference assistant. Using established pharmacology for "${name}" (dosage form: ${dosageForm}), return ONLY a JSON object with exactly these keys:
+{
+  "description": "Brief description of drug class and mechanism",
+  "indication": "Main clinical indications",
+  "contraindication": "Major contraindications",
+  "pregnancy_lactation": "Pregnancy and lactation safety",
+  "interactions": "Key drug interactions",
+  "side_effects": "Common side effects",
+  "storage_condition_patient": "Storage instructions for patients"
 }
-
-async function checkDrugInteractions(medicines) {
-  const names = medicines.map(m => (typeof m === 'string' ? m : (m.generic_name || m.brand_name || ''))).filter(Boolean);
-
-  if (names.length < 2) {
-    return { hasInteractions: false, warnings: [], checkedCount: names.length };
-  }
-
-  const prompt = `You are a clinical pharmacist AI. Analyze this list of medications for potential drug-drug interactions: ${names.join(', ')}.
-  Return a JSON object with this structure:
-  {
-    "hasInteractions": true or false,
-    "warnings": [
-      {
-        "severity": "HIGH or MODERATE or LOW",
-        "title": "Short title of interaction",
-        "warning": "Detailed clinical warning",
-        "action": "Actionable advice for the pharmacist",
-        "involvedDrugs": ["drug1", "drug2"]
-      }
-    ]
-  }`;
+Do not invent dosages. Do not add extra keys.`;
 
   try {
-    const textResult = await fetchGeminiAPI(prompt, true);
-    if (textResult) {
-      const parsed = JSON.parse(textResult);
-      return { ...parsed, checkedCount: names.length };
-    }
+    const parsed = await parseJsonResponse(prompt);
+    return {
+      ...getLocalFallback(name, dosageForm),
+      ...parsed,
+      source: 'GOOGLE_GEMINI',
+      ai_available: true,
+    };
   } catch (err) {
-    console.error('Gemini Interaction Checker Error:', err.message);
+    console.error('[AI AUTOFILL]', err.message);
+    const fallback = getLocalFallback(name, dosageForm);
+    fallback.fallback_reason =
+      err instanceof AiConfigError
+        ? 'AI is not configured correctly on this server.'
+        : 'AI autofill is temporarily unavailable.';
+    return fallback;
   }
-
-  return { hasInteractions: false, warnings: [], checkedCount: names.length, error: "AI service unreachable" };
 }
-
-async function generateCounselingPoints(items) {
-  if (!items || items.length === 0) {
-    return "No medications selected for counseling.";
-  }
-
-  const medList = items.map(item => {
-    const name = item.brand_name || item.generic_name || item.name || `Drug`;
-    const dose = item.dosage_instruction || item.strength || 'as prescribed';
-    return `${name} (${dose})`;
-  }).join(', ');
-
-  const prompt = `You are a clinical pharmacist AI. Generate concise patient counseling points for a prescription containing: ${medList}.
-  Provide administration advice, key precautions, and major side effects in bullet points. Keep it brief and patient-friendly.`;
-
-  try {
-    const textResult = await fetchGeminiAPI(prompt, false);
-    if (textResult) {
-      return textResult.trim();
-    }
-  } catch (err) {
-    console.error('Gemini Counseling Error:', err.message);
-  }
-
-  return `📌 PATIENT COUNSELING SUMMARY:\n\nFor ${medList}:\n• Take medications exactly as prescribed.\n• Complete the full course of treatment.\n• Keep out of reach of children and store in a cool, dry place.\n• Contact your healthcare provider if unexpected symptoms occur.`;
-}
-
-// -------------------------------------------------------------------
-// Express API Routes with ECONNRESET Guarding
-// -------------------------------------------------------------------
-
-// POST /api/ai/autofill
-router.post('/api/ai/autofill', async (req, res) => {
-  try {
-    const { name, dosageForm } = req.body;
-    const result = await autofillMedicineDetails(name, dosageForm);
-    res.json(result);
-  } catch (err) {
-    console.error('Autofill Route Error:', err.message);
-    res.status(500).json({ error: 'Internal server error during autofill' });
-  }
-});
-
-// GET /api/sales (Guarded against database ECONNRESET socket drops)
-router.get('/api/sales', async (req, res) => {
-  try {
-    res.json({ success: true, sales: [] });
-  } catch (err) {
-    console.error('Error fetching sales:', err.message);
-    res.status(503).json({ error: 'Database connection interrupted. Retrying...' });
-  }
-});
 
 module.exports = {
   autofillMedicineDetails,
-  checkDrugInteractions,
-  generateCounselingPoints,
-  router
+  fetchGeminiAPI,
 };

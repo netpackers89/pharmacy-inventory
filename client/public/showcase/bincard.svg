@@ -1,0 +1,32 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Bin card and stock history mockup">
+  <rect width="640" height="360" fill="#f4f5f7"/>
+  <rect x="24" y="24" width="592" height="312" rx="18" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="44" y="48" width="552" height="42" rx="10" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="60" y="63" width="140" height="12" rx="6.0" fill="#9aa4b5"/>
+  <rect x="500" y="61" width="80" height="18" rx="9" fill="#16181d"/>
+  <rect x="44" y="102" width="552" height="44" rx="10" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="60" y="118" width="110" height="10" rx="5.0" fill="#9aa4b5"/>
+  <rect x="190" y="118" width="120" height="10" rx="5.0" fill="#9aa4b5"/>
+  <rect x="330" y="118" width="90" height="10" rx="5.0" fill="#9aa4b5"/>
+  <rect x="450" y="118" width="60" height="10" rx="5.0" fill="#9aa4b5"/>
+  <rect x="44" y="148" width="552" height="44" rx="10" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="60" y="164" width="110" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="190" y="164" width="120" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="330" y="164" width="90" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="450" y="164" width="60" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="44" y="194" width="552" height="44" rx="10" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="60" y="210" width="110" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="190" y="210" width="120" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="330" y="210" width="90" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="450" y="210" width="60" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="44" y="240" width="552" height="44" rx="10" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="60" y="256" width="110" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="190" y="256" width="120" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="330" y="256" width="90" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="450" y="256" width="60" height="10" rx="5.0" fill="#c9d0dd"/>
+  <rect x="530" y="102" width="26" height="12" rx="6.0" fill="#3d9a68"/>
+  <rect x="530" y="148" width="26" height="12" rx="6.0" fill="#c25e5e"/>
+  <rect x="530" y="194" width="26" height="12" rx="6.0" fill="#3d9a68"/>
+  <rect x="530" y="240" width="26" height="12" rx="6.0" fill="#3d9a68"/>
+
+</svg>

@@ -1,7 +1,7 @@
-/* Header component styles — mobile-first */
+/* Header component styles — mobile-first, theme aware */
 
 .header {
-  height: 56px;
+  height: 58px;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -10,10 +10,11 @@
   position: sticky;
   top: 0;
   z-index: 40;
-  background: var(--surface);
+  background: var(--header-bg);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   width: 100%;
-  overflow: hidden;
 }
 
 .sidebar-toggle-btn {
@@ -25,57 +26,151 @@
   padding: 0.45rem;
   cursor: pointer;
   border-radius: 8px;
+  color: var(--text-secondary);
   flex-shrink: 0;
   min-width: 36px;
   min-height: 36px;
   transition: background 0.15s;
 }
-.sidebar-toggle-btn:hover { background: var(--surface-alt); }
+.sidebar-toggle-btn:hover { background: var(--surface-hover); }
 
-/* On desktop, sidebar is always visible — no toggle needed */
-@media (min-width: 768px) {
+/* On desktop the sidebar is always visible — no toggle needed */
+@media (min-width: 1024px) {
   .sidebar-toggle-btn { display: none; }
 }
 
-/* User info text — hidden on mobile (user sees it in the sidebar) */
+.header-brand {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 9px;
+  background: var(--primary);
+  color: var(--primary-text);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+}
+
+/* ── Global search ── */
+.header-search {
+  position: relative;
+  flex: 1;
+  max-width: 380px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+}
+.header-search-icon {
+  position: absolute;
+  left: 11px;
+  color: var(--text-faint);
+  pointer-events: none;
+}
+.header-search input {
+  width: 100%;
+  min-height: 36px;
+  border: 1px solid var(--border-strong);
+  border-radius: 10px;
+  background: var(--surface-alt);
+  color: var(--text-main);
+  font-size: 0.85rem;
+  padding: 0.4rem 0.8rem 0.4rem 2.1rem;
+  outline: none;
+  transition: all var(--transition-fast);
+}
+.header-search input::placeholder { color: var(--text-faint); }
+.header-search input:focus {
+  background: var(--surface);
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.header-search-dropdown {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+  z-index: 60;
+  max-height: 340px;
+  overflow-y: auto;
+}
+.header-search-empty {
+  padding: 0.8rem 1rem;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+}
+
+.search-dropdown-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  width: 100%;
+  text-align: left;
+  padding: 0.6rem 0.9rem;
+  background: transparent;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+.search-dropdown-item:last-child { border-bottom: none; }
+.search-dropdown-item:hover { background: var(--surface-hover); }
+.search-dropdown-item .suggestion-left { display: flex; align-items: center; gap: 0.55rem; min-width: 0; }
+.search-dropdown-item .brand-name      { font-size: 0.86rem; color: var(--text-main); font-weight: 700; display: block; }
+.search-dropdown-item .generic-info    { font-size: 0.72rem; color: var(--text-muted); display: block; }
+
+/* ── Right side actions ── */
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  flex-shrink: 0;
+}
+
+@media (max-width: 480px) {
+  .header-scan-btn { display: none; } /* floating scan FAB covers it */
+}
+
 .user-info {
   display: flex;
   flex-direction: column;
-  line-height: 1.2;
+  line-height: 1.25;
 }
-.user-info .username { font-size: 0.82rem; font-weight: 800; color: var(--text-main); white-space: nowrap; }
-.user-info .role     { font-size: 0.68rem; color: var(--text-muted); text-transform: capitalize; }
+.user-info .username { font-size: 0.8rem; font-weight: 800; color: var(--text-main); white-space: nowrap; }
+.user-info .role     { font-size: 0.66rem; color: var(--text-muted); }
+
+.user-profile {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding-left: 0.35rem;
+  border-left: 1px solid var(--border);
+}
 
 @media (max-width: 767px) {
-  /* Hide user-info text AND avatar on small screens — it's in the sidebar */
-  .user-profile {
-    display: none !important;
-  }
-  /* Also hide logout button — it's in the sidebar footer */
-  .header-logout-btn {
-    display: none !important;
-  }
+  /* User info lives in the sidebar on small screens */
+  .user-profile { display: none !important; }
 }
 
-/* Avatar */
 .user-avatar-big {
   width: 32px;
   height: 32px;
   flex-shrink: 0;
   border-radius: 50%;
-  background: var(--primary);
-  color: #fff;
+  background: var(--surface-alt);
+  color: var(--text-main);
+  border: 1px solid var(--border-strong);
   display: flex;
   align-items: center;
   justify-content: center;
   font-weight: 800;
-  font-size: 0.85rem;
+  font-size: 0.8rem;
 }
-
-/* Search suggestions */
-.search-dropdown-item { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; }
-.search-dropdown-item .suggestion-left { display: flex; align-items: center; gap: 0.55rem; }
-.search-dropdown-item .brand-name      { font-size: 0.88rem; color: var(--text-main); font-weight: 700; }
-.search-dropdown-item .generic-info    { font-size: 0.75rem; color: var(--text-muted); display: block; }
-.search-dropdown-item .suggestion-right { text-align: right; }
-.search-dropdown-item .stock-info      { font-size: 0.72rem; color: var(--text-muted); display: block; margin-top: 2px; }

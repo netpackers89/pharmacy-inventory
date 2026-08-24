@@ -1,56 +1,73 @@
-import React, { createContext, useContext, useState, useEffect } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authAPI } from '../services/api';
 
 const AuthContext = createContext();
 
-export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(() => {
+const readSavedUser = () => {
+  try {
     const saved = localStorage.getItem('pharm_user');
-    return saved ? JSON.parse(saved) : null; // Removed hardcoded default user
-  });
+    return saved ? JSON.parse(saved) : null;
+  } catch (_) {
+    return null;
+  }
+};
+
+export const AuthProvider = ({ children }) => {
+  const [user, setUser] = useState(readSavedUser);
+
+  const persistSession = useCallback((token, nextUser) => {
+    localStorage.setItem('pharm_token', token);
+    localStorage.setItem('pharm_user', JSON.stringify(nextUser));
+    setUser(nextUser);
+  }, []);
 
   const login = async (username, password) => {
     try {
       const res = await authAPI.login({ username, password });
       if (res.data.token) {
-        localStorage.setItem('pharm_token', res.data.token);
-        localStorage.setItem('pharm_user', JSON.stringify(res.data.user));
-        setUser(res.data.user);
+        persistSession(res.data.token, res.data.user);
         return { success: true };
       }
+      return { success: false, error: 'Login failed' };
     } catch (err) {
       const apiError = err?.response?.data?.error;
       const message = typeof apiError === 'string'
         ? apiError
-        : apiError?.message || JSON.stringify(apiError) || 'Login failed';
+        : apiError?.message || 'Login failed. Please check your connection and try again.';
       return { success: false, error: message };
     }
   };
 
-  const signup = async (username, password, role) => {
+  /*
+   * Guest Mode — the visitor provides their NAME (required & validated on
+   * both ends). The server issues a READ-ONLY guest session; every write
+   * request made with it is rejected server-side.
+   */
+  const loginAsGuest = async (guestName) => {
     try {
-      const res = await authAPI.signup({ username, password, role });
-      if (res.data) {
-        // Log them in automatically after signup
-        return await login(username, password);
+      const res = await authAPI.guest(guestName);
+      if (res.data.token) {
+        persistSession(res.data.token, { ...res.data.user, is_guest: true });
+        return { success: true };
       }
+      return { success: false, error: 'Could not start guest session' };
     } catch (err) {
       const apiError = err?.response?.data?.error;
-      const message = typeof apiError === 'string'
-        ? apiError
-        : apiError?.message || JSON.stringify(apiError) || 'Signup failed';
+      const message = typeof apiError === 'string' ? apiError : 'Could not start guest session';
       return { success: false, error: message };
     }
   };
 
-  const logout = () => {
+  const logout = useCallback(() => {
     localStorage.removeItem('pharm_token');
     localStorage.removeItem('pharm_user');
     setUser(null);
-  };
+  }, []);
+
+  const isGuest = Boolean(user?.is_guest || user?.role === 'GUEST');
 
   return (
-    <AuthContext.Provider value={{ user, setUser, login, signup, logout }}>
+    <AuthContext.Provider value={{ user, isGuest, setUser, login, loginAsGuest, logout }}>
       {children}
     </AuthContext.Provider>
   );

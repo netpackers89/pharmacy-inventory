@@ -1,5 +1,13 @@
 const db = require('../config/db');
 
+/* Packaging units supported by NET-PHARMA (configurable conversions — never hard-coded assumptions). */
+const PACKAGING_UNITS = {
+  SINGLE_DOSE: 'Single Dose',
+  STRIP:       'Strip',
+  INNER_BOX:   'Inner Box',
+  OUTER_BOX:   'Outer Box',
+};
+
 // Add stock to an existing drug
 // Workflow: Find Medicine -> Find Batch -> Update/Create Batch -> Create Movement
 exports.addStock = async (req, res) => {
@@ -12,16 +20,53 @@ exports.addStock = async (req, res) => {
             batch_number,
             manufacture_date,
             expiry_date,
-            buy_price,
-            sell_price,
             quantity,
             user_id,
             barcode,
             qr_code,
             abc_category,
-            ven_category
+            ven_category,
+            // Packaging system:
+            packaging_unit = 'SINGLE_DOSE',
+            units_per_package,      // single doses contained in ONE selected unit
+            buy_price,              // purchase price PER SELECTED UNIT
+            sell_price              // selling price PER SELECTED UNIT
         } = req.body;
+
         const current_user_id = user_id || (req.user && req.user.user_id);
+
+        /* ── Validation: never save ambiguous stock ── */
+        const unitKey = String(packaging_unit || '').toUpperCase();
+        if (!PACKAGING_UNITS[unitKey]) {
+            throw Object.assign(new Error('Packaging unit is missing or not supported.'), { status: 400 });
+        }
+        const unitsReceived = parseInt(quantity, 10);
+        if (!Number.isFinite(unitsReceived) || unitsReceived <= 0) {
+            throw Object.assign(new Error('Units received must be a positive whole number.'), { status: 400 });
+        }
+        const dosesPerUnit = Math.floor(Number(units_per_package));
+        if (!Number.isFinite(dosesPerUnit) || dosesPerUnit < 1) {
+            throw Object.assign(new Error('Single doses per selected unit must be at least 1.'), { status: 400 });
+        }
+        const buyPerUnit = parseFloat(buy_price);
+        const sellPerUnit = parseFloat(sell_price);
+        if (!Number.isFinite(buyPerUnit) || buyPerUnit <= 0) {
+            throw Object.assign(new Error('Purchase price per selected unit is required.'), { status: 400 });
+        }
+        if (!Number.isFinite(sellPerUnit) || sellPerUnit <= 0) {
+            throw Object.assign(new Error('Selling price per selected unit is required.'), { status: 400 });
+        }
+        if (sellPerUnit < buyPerUnit * 0.2) {
+            // soft sanity guard against obvious data entry errors
+            throw Object.assign(new Error('Selling price looks unrealistically low compared to the purchase price. Please review.'), { status: 400 });
+        }
+
+        const totalSingleDoses = unitsReceived * dosesPerUnit;
+        // Stock is tracked in SINGLE DOSES so existing FEFO deduction logic stays correct.
+        const stockDelta = totalSingleDoses;
+        // Per-single-dose prices are derived on read: price / units_per_package.
+        const buyPriceStored = buyPerUnit / dosesPerUnit;
+        const sellPriceStored = sellPerUnit / dosesPerUnit;
 
         // Verify Medicine exists
         const medResult = await client.query(`SELECT medicine_id, generic_name, brand_name FROM medicines WHERE medicine_id = $1`, [medicine_id]);
@@ -31,38 +76,49 @@ exports.addStock = async (req, res) => {
 
         // Check if Batch exists for this medicine
         const batchResult = await client.query(`
-            SELECT batch_id, stock_quantity 
-            FROM batches 
+            SELECT batch_id, stock_quantity, packaging_unit, units_per_package
+            FROM batches
             WHERE medicine_id = $1 AND batch_number = $2
         `, [medicine_id, batch_number]);
 
         let batch_id;
         let previous_stock = 0;
-        let new_stock = quantity;
+        let new_stock = stockDelta;
 
         if (batchResult.rows.length > 0) {
             // Batch exists: Update
-            batch_id = batchResult.rows[0].batch_id;
-            previous_stock = batchResult.rows[0].stock_quantity;
-            new_stock = previous_stock + quantity;
+            const existing = batchResult.rows[0];
+            if (existing.packaging_unit && existing.packaging_unit !== unitKey) {
+                throw Object.assign(
+                    new Error(`This batch was received as ${PACKAGING_UNITS[existing.packaging_unit] || existing.packaging_unit}. Use the same packaging unit or a different batch number.`),
+                    { status: 400 }
+                );
+            }
+            batch_id = existing.batch_id;
+            previous_stock = existing.stock_quantity;
+            new_stock = previous_stock + stockDelta;
 
             await client.query(`
-                UPDATE batches 
-                SET stock_quantity = $1, buy_price = $2, sell_price = $3, updated_at = CURRENT_TIMESTAMP
-                WHERE batch_id = $4
-            `, [new_stock, buy_price, sell_price, batch_id]);
+                UPDATE batches
+                SET stock_quantity = $1, buy_price = $2, sell_price = $3,
+                    single_doses_received = COALESCE(single_doses_received, 0) + $4,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE batch_id = $5
+            `, [new_stock, buyPriceStored, sellPriceStored, stockDelta, batch_id]);
         } else {
             // Batch does not exist: Create
             const insertBatch = `
                 INSERT INTO batches (
                     medicine_id, supplier_id, batch_number, manufacture_date,
-                    expiry_date, buy_price, sell_price, stock_quantity, barcode, qr_code, abc_category, ven_category
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    expiry_date, buy_price, sell_price, stock_quantity, barcode, qr_code, abc_category, ven_category,
+                    packaging_unit, units_per_package, single_doses_received
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
                 RETURNING batch_id
             `;
             const newBatch = await client.query(insertBatch, [
                 medicine_id, supplier_id, batch_number, manufacture_date || null,
-                expiry_date, buy_price, sell_price, quantity, barcode, qr_code, abc_category, ven_category
+                expiry_date, buyPriceStored, sellPriceStored, stockDelta, barcode, qr_code, abc_category, ven_category,
+                unitKey, dosesPerUnit, stockDelta
             ]);
             batch_id = newBatch.rows[0].batch_id;
         }
@@ -70,10 +126,13 @@ exports.addStock = async (req, res) => {
         // Create Stock Movement with enriched columns
         await client.query(`
             INSERT INTO stock_movements (
-                medicine_id, batch_id, user_id, movement_type, quantity, 
+                medicine_id, batch_id, user_id, movement_type, quantity,
                 previous_stock, new_stock, reference_type, notes
             ) VALUES ($1, $2, $3, 'RESUPPLY', $4, $5, $6, 'RESUPPLY', $7)
-        `, [medicine_id, batch_id, current_user_id, quantity, previous_stock, new_stock, `Resupply: ${quantity} units added`]);
+        `, [
+            medicine_id, batch_id, current_user_id, stockDelta, previous_stock, new_stock,
+            `Resupply: ${unitsReceived} ${PACKAGING_UNITS[unitKey]}${unitsReceived > 1 ? 's' : ''} × ${dosesPerUnit} dose(s) = ${totalSingleDoses} single doses added`
+        ]);
 
         // Audit log inside the transaction
         await client.query(`
@@ -82,18 +141,39 @@ exports.addStock = async (req, res) => {
         `, [
           current_user_id,
           batch_id,
-          `Resupply: Added ${quantity} units of ${medResult.rows[0].generic_name} (Batch: ${batch_number})`,
-          JSON.stringify({ medicine_id, batch_id, quantity, previous_stock, new_stock }),
+          `Resupply: Added ${unitsReceived} ${PACKAGING_UNITS[unitKey]}(s) of ${medResult.rows[0].generic_name} (${totalSingleDoses} single doses, Batch: ${batch_number})`,
+          JSON.stringify({
+            medicine_id, batch_id, packaging_unit: unitKey,
+            units_received: unitsReceived, doses_per_unit: dosesPerUnit,
+            single_doses_added: totalSingleDoses,
+            purchase_price_per_unit: buyPerUnit, selling_price_per_unit: sellPerUnit,
+            purchase_price_per_dose: parseFloat(buyPriceStored.toFixed(4)),
+            selling_price_per_dose: parseFloat(sellPriceStored.toFixed(4)),
+            previous_stock, new_stock
+          }),
           req.ipAddress || null,
           req.userAgent || null
         ]);
 
         await client.query('COMMIT');
-        res.status(200).json({ message: 'Stock added successfully', batch_id });
+        res.status(200).json({
+            message: 'Stock added successfully',
+            batch_id,
+            packaging: {
+                unit: unitKey,
+                units_received: unitsReceived,
+                doses_per_unit: dosesPerUnit,
+                total_single_doses: totalSingleDoses,
+                purchase_price_per_unit: buyPerUnit,
+                selling_price_per_unit: sellPerUnit,
+                purchase_price_per_dose: parseFloat(buyPriceStored.toFixed(4)),
+                selling_price_per_dose: parseFloat(sellPriceStored.toFixed(4)),
+            },
+        });
     } catch (err) {
         await client.query('ROLLBACK');
-        console.error(err);
-        res.status(500).json({ error: 'Failed to add stock', details: err.message });
+        console.error('[ADD_STOCK]', err.message);
+        res.status(err.status || 500).json({ error: err.message || 'Failed to add stock' });
     } finally {
         client.release();
     }
@@ -121,6 +201,9 @@ exports.getStock = async (req, res) => {
                     b.qr_code,
                     b.stock_quantity AS stock_on_hand,
                     b.sell_price AS current_price,
+                    b.packaging_unit,
+                    b.units_per_package AS strip_size,
+                    (b.stock_quantity / GREATEST(b.units_per_package, 1)) AS units_available,
                     b.status
                 FROM batches b
                 JOIN medicines m ON m.medicine_id = b.medicine_id
@@ -157,6 +240,24 @@ exports.getStock = async (req, res) => {
                     ORDER BY b2.expiry_date ASC
                     LIMIT 1
                 ) AS current_price,
+                (
+                    SELECT b3.packaging_unit
+                    FROM batches b3
+                    WHERE b3.medicine_id = m.medicine_id
+                      AND b3.stock_quantity > 0
+                      AND b3.status = 'ACTIVE'
+                    ORDER BY b3.expiry_date ASC
+                    LIMIT 1
+                ) AS packaging_unit,
+                (
+                    SELECT GREATEST(b4.units_per_package, 1)
+                    FROM batches b4
+                    WHERE b4.medicine_id = m.medicine_id
+                      AND b4.stock_quantity > 0
+                      AND b4.status = 'ACTIVE'
+                    ORDER BY b4.expiry_date ASC
+                    LIMIT 1
+                ) AS strip_size,
                 m.status
             FROM medicines m
             LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
@@ -175,10 +276,12 @@ exports.getStock = async (req, res) => {
 exports.getBinCard = async (req, res) => {
     try {
         const result = await db.query(`
-            SELECT b.batch_id, m.generic_name as drug_name, b.batch_number, 
-                   s.name as supplier, b.expiry_date, b.stock_quantity, 
-                   b.buy_price, b.sell_price, 
-                   (b.stock_quantity * b.sell_price) as valuation
+            SELECT b.batch_id, m.generic_name as drug_name, b.batch_number,
+                   s.name as supplier, b.expiry_date, b.stock_quantity,
+                   b.buy_price, b.sell_price,
+                   (b.stock_quantity * b.sell_price) as valuation,
+                   b.packaging_unit, b.units_per_package,
+                   (b.stock_quantity / GREATEST(b.units_per_package, 1)) as units_available
             FROM batches b
             JOIN medicines m ON b.medicine_id = m.medicine_id
             JOIN suppliers s ON b.supplier_id = s.supplier_id
@@ -196,7 +299,7 @@ exports.getBinCard = async (req, res) => {
 exports.getMovements = async (req, res) => {
     try {
         const result = await db.query(`
-            SELECT sm.movement_date, m.generic_name as drug_name, b.batch_number,
+            SELECT sm.movement_id, sm.movement_date, m.generic_name as drug_name, b.batch_number,
                    sm.movement_type, sm.quantity, sm.previous_stock, sm.new_stock,
                    u.full_name as user_name, sm.notes as reference
             FROM stock_movements sm
@@ -413,7 +516,9 @@ exports.getBinCardDetail = async (req, res) => {
 
         const batchesResult = await db.query(`
             SELECT b.batch_id, b.batch_number, b.stock_quantity, b.expiry_date, s.name as supplier_name,
-                   b.barcode, b.qr_code, b.abc_category, b.ven_category
+                   b.barcode, b.qr_code, b.abc_category, b.ven_category,
+                   b.packaging_unit, b.units_per_package,
+                   (b.stock_quantity / GREATEST(b.units_per_package, 1)) as units_available
             FROM batches b
             LEFT JOIN suppliers s ON b.supplier_id = s.supplier_id
             WHERE b.medicine_id = $1 AND b.status != 'INACTIVE'

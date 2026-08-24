@@ -17,6 +17,7 @@ const categoryRoutes = require('./routes/categoryRoutes');
 const settingsRoutes = require('./routes/settingsRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const auditRoutes = require('./routes/auditRoutes');
+const ddiRoutes = require('./routes/ddiRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -63,6 +64,12 @@ app.use((req, res, next) => {
 const { auditMiddleware } = require('./middleware/auditMiddleware');
 app.use(auditMiddleware);
 
+// Guest read-only enforcement — blocks ALL write requests made with a
+// guest token, server-side, before any controller runs.
+const { enforceGuestReadOnly } = require('./middleware/auth');
+app.use(enforceGuestReadOnly);
+
+
 
 // API Routes
 app.use('/api/auth', authRoutes);
@@ -77,6 +84,7 @@ app.use('/api/categories', categoryRoutes);
 app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/audit-logs', auditRoutes);
+app.use('/api/ddi', ddiRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -94,6 +102,10 @@ app.use((err, req, res, next) => {
 async function startServer() {
   await db.initializeDB();
   await seedData();
+
+  // Seed the local DDI fallback dataset (idempotent).
+  const { ensureDdiSeeded } = require('./services/ddiService');
+  await ensureDdiSeeded();
 
   const server = require('http').createServer(app);
   const io = require('./socket').init(server, corsOptions);

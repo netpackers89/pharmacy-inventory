@@ -1,8 +1,13 @@
-/* Suppliers page styles */
-.suppliers-list { display:grid; gap:0.75rem; }
-.supplier-row { background: var(--surface); border:1px solid var(--border); padding:0.75rem; border-radius:8px; display:flex; justify-content:space-between; align-items:center; }
+/* ===================================================
+   SUPPLIERS page
+   =================================================== */
 
-@media (max-width: 640px) {
-	.supplier-row { flex-direction:column; align-items:flex-start; gap:0.5rem; }
+.suppliers-page { width: 100%; }
+
+.sup-cell {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.84rem;
+  color: var(--text-muted);
 }
-

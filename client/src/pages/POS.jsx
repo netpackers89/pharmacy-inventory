@@ -13,11 +13,13 @@ import {
   ShieldCheck,
   Calculator,
   MessageSquareText,
+  Printer,
 } from "lucide-react";
 
-import { inventoryAPI, salesAPI, aiAPI } from "../services/api";
+import { inventoryAPI, salesAPI, ddiAPI } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
+import { EmptyState } from "../components/Feedback";
 
 /*
   POS WORKFLOW
@@ -36,6 +38,11 @@ import { useToast } from "../context/ToastContext";
   IMPORTANT:
   POS never creates a medicine or a batch.
   It only consumes existing inventory records.
+
+  CART RULES:
+  - Scanning a NEW medicine appends it to the cart.
+  - Re-scanning a medicine already in the cart increases its quantity.
+  - Existing items are never replaced or removed by a scan.
 */
 
 const FREQUENCIES = [
@@ -84,15 +91,14 @@ const getFrequency = (code) =>
 const getRoute = (code) =>
   ROUTES.find((route) => route.code === code) || ROUTES[0];
 
+/* PRICE RULE:
+   current_price = price of ONE STRIP.
+   strip_size = number of single doses inside one strip (default 10). */
 const calculateDispensing = (item) => {
   const dose = Math.max(0, numberOr(item.dose_per_admin, 0));
   const duration = Math.max(0, numberOr(item.duration_days, 0));
   const frequency = getFrequency(item.frequency_code);
 
-  // PRICE RULE:
-  // current_price = price of ONE STRIP.
-  // strip_size = number of single doses inside one strip.
-  // Default pharmacy strip size = 10.
   const stripSize = Math.max(
     1,
     Math.floor(numberOr(item.strip_size ?? item.package_capacity, 10)),
@@ -117,9 +123,6 @@ const calculateDispensing = (item) => {
   }
 
   const required_units = Math.ceil(dose * frequency.per_day * duration);
-
-  // The prescription is calculated in SINGLE doses.
-  // The POS then rounds UP to complete strips.
   const strips = Math.ceil(required_units / stripSize);
   const dispense_units = strips * stripSize;
 
@@ -185,23 +188,37 @@ const getCartItemKey = (item) => {
   return `${medicineId}-${batchId}`;
 };
 
+const escapeHtml = (unsafe) => {
+  if (!unsafe && unsafe !== 0) return '';
+  return String(unsafe).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[m]; });
+};
+
 export const POS = ({
   onOpenBarcodeScanner,
   scannedMedicine,
   onClearScannedMedicine,
+  cart: cartProp,
+  setCart: setCartProp,
 }) => {
   const { user } = useAuth();
   const { toast, withLoading } = useToast();
 
+  // Cart is lifted to App so page changes never clear an ongoing sale.
+  const [internalCart, setInternalCart] = useState([]);
+  const cart = cartProp !== undefined ? cartProp : internalCart;
+  const setCart = setCartProp !== undefined ? setCartProp : setInternalCart;
+
   const [stockList, setStockList] = useState([]);
+  const [stockLoading, setStockLoading] = useState(true);
+  const [stockError, setStockError] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
-  const [cart, setCart] = useState([]);
 
   const [aiWarnings, setAiWarnings] = useState([]);
   const [hasInteractions, setHasInteractions] = useState(false);
   const [aiLoading, setAiLoading] = useState(false);
 
   const [showInteractionConfirm, setShowInteractionConfirm] = useState(false);
+  const [showDetails, setShowDetails] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
 
   const [checkoutSuccess, setCheckoutSuccess] = useState(false);
@@ -223,22 +240,31 @@ export const POS = ({
   });
 
   useEffect(() => {
-    loadStock();
-  }, []);
+    let cancelled = false;
+    setStockLoading(true);
+    setStockError(false);
 
-  const loadStock = async () => {
-    try {
-      const response = await inventoryAPI.getStock();
-      setStockList((response.data || []).map(normalizeMedicine));
-    } catch {
-      toast.error("Unable to load current inventory.");
-    }
-  };
+    inventoryAPI.getStock()
+      .then((response) => {
+        if (cancelled) return;
+        const rows = response.data;
+        setStockList(Array.isArray(rows) ? rows.map(normalizeMedicine) : []);
+        setStockLoading(false);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setStockList([]);
+        setStockError(true);
+        setStockLoading(false);
+      });
+
+    return () => { cancelled = true; };
+  }, []);
 
   /*
     Scanner integration:
     The scanner parent passes an existing inventory medicine here.
-    It is immediately sent into the POS cart.
+    It is appended to the current POS cart — never replacing it.
   */
   useEffect(() => {
     if (!scannedMedicine) return;
@@ -253,13 +279,12 @@ export const POS = ({
   }, [scannedMedicine]);
 
   /*
-    Multi-drug checking:
-    This runs every time the selected medicine list changes.
-    One medicine = no interaction comparison.
-    Two or more = check the complete combination.
+    Drug–drug interaction checking (LOCAL DDI dataset — not AI):
+    Runs whenever the medicine list changes. Unique unordered pairs are
+    checked server-side; results are deterministic and auditable.
   */
   useEffect(() => {
-    if (cart.length < 2) {
+    if (cart.length < 1) {
       setHasInteractions(false);
       setAiWarnings([]);
       setAiLoading(false);
@@ -272,29 +297,21 @@ export const POS = ({
       setAiLoading(true);
 
       try {
-        const response = await aiAPI.checkInteractions(
-          cart.map((medicine) => ({
-            medicine_id: medicine.medicine_id,
-            generic_name: medicine.generic_name,
-            brand_name: medicine.brand_name,
-            strength: medicine.strength,
-            dose_per_admin: medicine.dose_per_admin,
-            frequency_code: medicine.frequency_code,
-            route_of_admin: medicine.route_of_admin,
-            duration_days: medicine.duration_days,
-          })),
-        );
-
+        const response = await ddiAPI.check(cart);
         if (cancelled) return;
 
         const data = response.data || {};
         setHasInteractions(Boolean(data.hasInteractions));
-        setAiWarnings(Array.isArray(data.warnings) ? data.warnings : []);
+        setAiWarnings(Array.isArray(data.alerts) ? data.alerts : []);
+        if (data.error) {
+          toast.warning(data.error);
+        }
       } catch {
         if (!cancelled) {
+          // Never block the sale on a failed check — surface it clearly.
           setHasInteractions(false);
           setAiWarnings([]);
-          toast.warning("Multi-drug checking could not be completed.");
+          toast.warning("Interaction check is temporarily unavailable. Pharmacist judgement required.");
         }
       } finally {
         if (!cancelled) setAiLoading(false);
@@ -327,16 +344,21 @@ export const POS = ({
         (item) => getCartItemKey(item) === itemKey,
       );
 
+      // Already in cart → increase quantity. Never duplicate, never replace.
       if (existingIndex >= 0) {
         const updated = [...current];
         const existing = updated[existingIndex];
+
+        if (Number(existing.quantity || 1) + 1 > Number(existing.stock_on_hand)) {
+          toast.warning(`Only ${existing.stock_on_hand} units of ${med.generic_name} are in stock.`);
+          return current;
+        }
+
         updated[existingIndex] = {
           ...existing,
           quantity: Number(existing.quantity || 1) + 1,
         };
-        toast.info(
-          `${med.generic_name} was already in the POS. Quantity increased.`,
-        );
+        toast.info(`${med.generic_name} quantity increased.`);
         return updated;
       }
 
@@ -390,20 +412,7 @@ export const POS = ({
     });
   };
 
-  const updatePrice = (index, value) => {
-    const price = Number(value);
-
-    if (!Number.isFinite(price) || price < 0) return;
-
-    setCart((current) => {
-      const updated = [...current];
-      updated[index] = {
-        ...updated[index],
-        current_price: price,
-      };
-      return updated;
-    });
-  };
+  /* Price comes from inventory/batch pricing — cashiers cannot edit it. */
 
   const updateRx = (index, field, value) => {
     setCart((current) => {
@@ -516,7 +525,7 @@ export const POS = ({
   );
 
   const printReceipt = (options = {}) => {
-    const pharmacyName = options.pharmacyName || 'My Pharmacy';
+    const pharmacyName = options.pharmacyName || 'NET-PHARMA';
     const now = new Date();
     const rows = cart.map((it, i) => {
       const calc = calculateDispensing(it);
@@ -526,22 +535,21 @@ export const POS = ({
 
     const total = numberOr(calculateTotal, 0);
 
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:20px} .card{max-width:680px;margin:0 auto;border-radius:12px;padding:20px;border:1px solid #e6eef7} h1{margin:0;font-size:20px} .meta{color:#64748b;font-size:13px;margin-top:6px} table{width:100%;border-collapse:collapse;margin-top:16px} td{vertical-align:top} .total{display:flex;justify-content:space-between;padding-top:12px;border-top:1px solid #e6eef7;margin-top:12px;font-weight:800;font-size:16px}</style></head><body><div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div><h1>${escapeHtml(pharmacyName)}</h1><div class="meta">Receipt — ${now.toLocaleString()}</div></div><div style="text-align:right;color:#64748b;font-size:12px">Powered by Pharmacy Inventory</div></div><div style="margin-top:12px;color:#334155">Items</div><table>${rows}</table><div class="total"><div>Total</div><div>ETB ${Number(total).toFixed(2)}</div></div><div style="margin-top:18px;font-size:13px;color:#475569">Thank you for your purchase. For medicine counselling please follow instructions above or contact your pharmacist.</div></div><script>function printAndClose(){window.print();}</script></body></html>`;
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:20px} .card{max-width:680px;margin:0 auto;border-radius:12px;padding:20px;border:1px solid #e6eef7} h1{margin:0;font-size:20px} .meta{color:#64748b;font-size:13px;margin-top:6px} table{width:100%;border-collapse:collapse;margin-top:16px} td{vertical-align:top} .total{display:flex;justify-content:space-between;padding-top:12px;border-top:1px solid #e6eef7;margin-top:12px;font-weight:800;font-size:16px}</style></head><body><div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div><h1>${escapeHtml(pharmacyName)}</h1><div class="meta">Receipt — ${now.toLocaleString()}</div></div><div style="text-align:right;color:#64748b;font-size:12px">Powered by NET-PHARMA</div></div><div style="margin-top:12px;color:#334155">Items</div><table>${rows}</table><div class="total"><div>Total</div><div>ETB ${Number(total).toFixed(2)}</div></div><div style="margin-top:18px;font-size:13px;color:#475569">Thank you for your purchase. For medicine counselling please follow instructions above or contact your pharmacist.</div></div><script>function printAndClose(){window.print();}</script></body></html>`;
 
     const w = window.open('', '_blank');
     if (!w) { toast.error('Pop-up blocked. Allow pop-ups for printing.'); return; }
     w.document.write(html);
     w.document.close();
-    // Wait for content to render before print
     w.onload = () => { w.focus(); w.print(); };
   };
 
-  const escapeHtml = (unsafe) => {
-    if (!unsafe && unsafe !== 0) return '';
-    return String(unsafe).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[m]; });
-  };
-
   const selectedItemCount = cart.length;
+
+  const hasCriticalInteractions = useMemo(
+    () => aiWarnings.filter((w) => w.severity === 1).length,
+    [aiWarnings],
+  );
 
   const stockProblems = useMemo(
     () =>
@@ -563,11 +571,13 @@ export const POS = ({
     }
 
     if (aiLoading) {
-      toast.warning("Please wait for the multi-drug check to finish.");
+      toast.warning("Please wait for the interaction check to finish.");
       return;
     }
 
-    if (hasInteractions) {
+    // Only CRITICAL interactions require an explicit pharmacist override reason.
+    const criticalCount = aiWarnings.filter((w) => w.severity === 1).length;
+    if (criticalCount > 0) {
       setShowInteractionConfirm(true);
       return;
     }
@@ -576,8 +586,9 @@ export const POS = ({
   };
 
   const proceedCheckout = async () => {
-    if (hasInteractions && !overrideReason.trim()) {
-      toast.error("An override reason is required.");
+    const criticalCount = aiWarnings.filter((w) => w.severity === 1).length;
+    if (criticalCount > 0 && !overrideReason.trim()) {
+      toast.error("A pharmacist review reason is required for critical interactions.");
       return;
     }
 
@@ -591,7 +602,7 @@ export const POS = ({
 
         /*
           Every selected medicine remains an individual sale line.
-          The backend should use the medicine/batch inventory relation
+          The backend uses the medicine/batch inventory relation
           to deduct stock and write the stock/bin-card transaction.
         */
         items: cart.map((item) => {
@@ -632,8 +643,6 @@ export const POS = ({
 
       setCart([]);
       setOverrideReason("");
-
-      await loadStock();
 
       setTimeout(() => {
         setCheckoutSuccess(false);
@@ -678,892 +687,388 @@ export const POS = ({
       .slice(0, 20);
   }, [searchQuery, stockList]);
 
+  const checkoutBlocked = cart.length === 0 || aiLoading || stockProblems.length > 0;
+
   return (
     <div className="pos-page">
       <div className="page-header">
         <div className="page-title-group">
           <h1>Point of Sale</h1>
           <p>
-            Scan or search an existing medicine, add multiple medicines, check
-            interactions, calculate dispensing quantities, and complete the
-            sale.
+            Scan or search a medicine, add multiple medicines, check
+            interactions, and complete the sale.
           </p>
         </div>
       </div>
 
       {checkoutSuccess && (
-        <div
-          className="checkout-success"
-          style={{
-            background: "#f0fdf4",
-            border: "1px solid #bbf7d0",
-            padding: "1rem",
-            borderRadius: "12px",
-            marginBottom: "1rem",
-            display: "flex",
-            alignItems: "center",
-            gap: "1rem",
-          }}
-        >
-          <CheckCircle2 size={32} color="#166534" />
+        <div className="checkout-success slide-up" role="status">
+          <CheckCircle2 size={30} />
           <div>
-            <strong style={{ color: "#166534", fontSize: "1.1rem" }}>
-              Sale Completed Successfully
-            </strong>
-            <p style={{ color: "#15803d", margin: 0 }}>
-              Receipt #{finalSaleId || "—"} · Total: ETB {finalTotal.toFixed(2)}
-            </p>
+            <strong>Sale Completed Successfully</strong>
+            <p>Receipt #{finalSaleId || "—"} · Total: ETB {finalTotal.toFixed(2)}</p>
           </div>
         </div>
       )}
 
-      <div
-        className="pos-layout"
-        style={{
-          display: "grid",
-          gridTemplateColumns: "minmax(0, 1fr) 360px",
-          gap: "1.5rem",
-          alignItems: "start",
-        }}
-      >
-        <div
-          style={{
-            background: "white",
-            padding: "1.5rem",
-            borderRadius: "14px",
-            border: "1px solid #e2e8f0",
-            boxShadow: "0 8px 30px rgba(15, 23, 42, 0.05)",
-          }}
-        >
-          <div
-            className="pos-scan-and-search"
-            style={{
-              display: "flex",
-              gap: "1rem",
-              marginBottom: "1.5rem",
-            }}
-          >
-            <div
-              className="smart-search-input-wrap"
-              style={{ flex: 1, position: "relative" }}
-            >
-              <Search
-                size={18}
-                color="#64748b"
-                style={{
-                  position: "absolute",
-                  left: "12px",
-                  top: "50%",
-                  transform: "translateY(-50%)",
-                }}
-              />
-
+      <div className="pos-layout">
+        {/* ══ LEFT · SEARCH + CART ══ */}
+        <section className="pos-main-card">
+          <div className="pos-scan-and-search">
+            <div className="smart-search-input-wrap pos-search-wrap">
+              <Search size={17} />
               <input
                 type="text"
-                placeholder="Search generic, brand, strength or batch..."
+                placeholder={stockError ? "Inventory could not be loaded — retry from the Inventory page" : "Search generic, brand, strength or batch…"}
+                disabled={stockLoading || stockError}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
-                style={{
-                  width: "100%",
-                  padding: "0.85rem 1rem 0.85rem 2.5rem",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "10px",
-                  fontSize: "1rem",
-                  outline: "none",
-                }}
+                aria-label="Search medicines to add"
               />
 
               {searchResults.length > 0 && (
-                <div
-                  style={{
-                    position: "absolute",
-                    top: "calc(100% + 6px)",
-                    left: 0,
-                    right: 0,
-                    background: "white",
-                    border: "1px solid #e2e8f0",
-                    borderRadius: "12px",
-                    boxShadow: "0 20px 40px rgba(15, 23, 42, 0.15)",
-                    zIndex: 50,
-                    maxHeight: "360px",
-                    overflowY: "auto",
-                  }}
-                >
+                <div className="pos-results fade-in" role="listbox">
                   {searchResults.map((medicine) => (
                     <button
                       type="button"
                       key={`${medicine.medicine_id}-${medicine.batch_id || "stock"}`}
+                      role="option"
+                      aria-selected="false"
                       onClick={() => addToCart(medicine)}
-                      style={{
-                        width: "100%",
-                        textAlign: "left",
-                        padding: "0.9rem 1rem",
-                        border: 0,
-                        borderBottom: "1px solid #f1f5f9",
-                        background: "white",
-                        cursor: "pointer",
-                        display: "flex",
-                        justifyContent: "space-between",
-                        gap: "1rem",
-                      }}
+                      className="pos-result-item"
                     >
-                      <span>
-                        <strong
-                          style={{
-                            color: "#0f172a",
-                            display: "block",
-                          }}
-                        >
-                          {medicine.generic_name}{" "}
-                          {medicine.brand_name
-                            ? `(${medicine.brand_name})`
-                            : ""}
+                      <span className="pos-result-name">
+                        <strong>
+                          {medicine.generic_name}
+                          {medicine.brand_name ? ` (${medicine.brand_name})` : ""}
                         </strong>
-
-                        <span
-                          style={{
-                            display: "block",
-                            fontSize: "0.78rem",
-                            color: "#64748b",
-                            marginTop: "3px",
-                          }}
-                        >
+                        <small>
                           {medicine.strength || "No strength"} · Stock:{" "}
                           {medicine.stock_on_hand}
-                          {medicine.batch_number
-                            ? ` · Batch ${medicine.batch_number}`
-                            : ""}
-                        </span>
+                          {medicine.batch_number ? ` · Batch ${medicine.batch_number}` : ""}
+                        </small>
                       </span>
-
-                      <strong style={{ whiteSpace: "nowrap" }}>
+                      <strong className="pos-result-price">
                         ETB {medicine.current_price.toFixed(2)} / strip
                       </strong>
                     </button>
                   ))}
                 </div>
               )}
+
+              {searchQuery.trim() && searchResults.length === 0 && !stockLoading && (
+                <div className="pos-results fade-in">
+                  <div className="pos-no-result">No medicine matches “{searchQuery}” in current stock.</div>
+                </div>
+              )}
             </div>
 
             {onOpenBarcodeScanner && (
-              <button
-                className="btn-scan"
-                type="button"
-                onClick={onOpenBarcodeScanner}
-                style={{
-                  padding: "0 1.3rem",
-                  background: "#0f172a",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "10px",
-                  cursor: "pointer",
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                  fontWeight: 800,
-                  whiteSpace: "nowrap",
-                }}
-              >
+              <button className="btn-scan" type="button" onClick={onOpenBarcodeScanner}>
                 <QrCode size={18} />
-                Scan Medicine
+                <span className="hide-sm">Scan Medicine</span>
               </button>
             )}
           </div>
 
           {cart.length > 0 && (
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.75rem",
-                marginBottom: "1rem",
-                padding: "0.8rem 1rem",
-                background: "#f8fafc",
-                borderRadius: "10px",
-              }}
-            >
-              <Pill size={18} color="#2563eb" />
+            <div className="pos-cart-hint">
+              <Pill size={17} />
               <strong>{selectedItemCount} medicine(s) selected</strong>
-              <span style={{ color: "#64748b" }}>
-                Scan another medicine to add it to the same POS transaction.
+              <span className="pos-hint-text">
+                Scan another medicine to add it to this sale — existing items stay.
               </span>
             </div>
           )}
 
-          <div style={{ overflowX: "auto" }}>
-            <table className="custom-table" style={{ minWidth: "900px" }}>
-              <thead>
-                <tr>
-                  <th>Drug</th>
-                  <th>Unit Price</th>
-                  <th>Qty</th>
-                  <th>Total</th>
-                  <th style={{ textAlign: "right" }}>Actions</th>
-                </tr>
-              </thead>
-
-              <tbody>
-                {cart.length === 0 ? (
+          <div className="table-container">
+            <div className="table-scroll-wrap">
+              <table className="custom-table pos-table">
+                <thead>
                   <tr>
-                    <td
-                      colSpan="5"
-                      style={{
-                        textAlign: "center",
-                        padding: "4rem 2rem",
-                        color: "#64748b",
-                      }}
-                    >
-                      <Pill
-                        size={36}
-                        style={{ marginBottom: "0.7rem", opacity: 0.5 }}
-                      />
-                      <div>
-                        <strong>No medicines selected</strong>
-                      </div>
-                      <div style={{ marginTop: "0.25rem" }}>
-                        Search or scan a medicine from inventory.
-                      </div>
-                    </td>
+                    <th>Drug</th>
+                    <th>Unit Price</th>
+                    <th>Qty</th>
+                    <th>Total</th>
+                    <th style={{ textAlign: "right" }}>Actions</th>
                   </tr>
-                ) : (
-                  cart.map((item, index) => {
-                    const calculation = calculateDispensing(item);
-                    const lineTotal =
-                      numberOr(item.current_price, 0) *
-                      numberOr(item.quantity, 0);
+                </thead>
 
-                    return (
-                      <tr
-                        key={
-                          item.cart_key ||
-                          `${item.medicine_id}-${item.batch_id || "no-batch"}`
-                        }
-                      >
-                        <td>
-                          <strong
-                            style={{
-                              color: "#0f172a",
-                              display: "block",
-                            }}
-                          >
-                            {item.generic_name}
-                          </strong>
+                <tbody>
+                  {cart.length === 0 ? (
+                    <tr>
+                      <td colSpan="5" style={{ padding: 0 }}>
+                        <EmptyState
+                          icon={<Pill size={28} />}
+                          title="No medicines selected yet"
+                          description="Search or scan a medicine from inventory to start this sale."
+                        />
+                      </td>
+                    </tr>
+                  ) : (
+                    cart.map((item, index) => {
+                      const calculation = calculateDispensing(item);
+                      const lineTotal =
+                        numberOr(item.current_price, 0) *
+                        numberOr(item.quantity, 0);
 
-                          {item.brand_name && (
+                      return (
+                        <tr
+                          key={
+                            item.cart_key ||
+                            `${item.medicine_id}-${item.batch_id || "no-batch"}`
+                          }
+                        >
+                          <td className="cell-truncate">
+                            <strong className="td-strong">{item.generic_name}</strong>
+
+                            {item.brand_name && (
+                              <small className="muted-line">{item.brand_name}</small>
+                            )}
+
+                            <small className="muted-line">
+                              {item.strength}
+                              {item.batch_number ? ` · Batch ${item.batch_number}` : ""}
+                              {item.expiry_date ? ` · Exp ${String(item.expiry_date).slice(0, 10)}` : ""}
+                            </small>
+
+                            {item.has_rx && (
+                              <div className="rx-panel">
+                                <div className="rx-grid">
+                                  <label className="rx-field">
+                                    Dose per admin
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={item.dose_per_admin}
+                                      onChange={(event) =>
+                                        updateRx(index, "dose_per_admin", event.target.value)
+                                      }
+                                    />
+                                  </label>
+
+                                  <label className="rx-field">
+                                    Frequency
+                                    <select
+                                      value={item.frequency_code}
+                                      onChange={(event) =>
+                                        updateRx(index, "frequency_code", event.target.value)
+                                      }
+                                    >
+                                      {FREQUENCIES.map((frequency) => (
+                                        <option key={frequency.code} value={frequency.code}>
+                                          {frequency.code}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+
+                                  <label className="rx-field">
+                                    Duration (days)
+                                    <input
+                                      type="number"
+                                      min="1"
+                                      value={item.duration_days}
+                                      disabled={
+                                        getFrequency(item.frequency_code).per_day === null
+                                      }
+                                      onChange={(event) =>
+                                        updateRx(index, "duration_days", event.target.value)
+                                      }
+                                    />
+                                  </label>
+
+                                  <label className="rx-field">
+                                    Route
+                                    <select
+                                      value={item.route_of_admin}
+                                      onChange={(event) =>
+                                        updateRx(index, "route_of_admin", event.target.value)
+                                      }
+                                    >
+                                      {ROUTES.map((route) => (
+                                        <option key={route.code} value={route.code}>
+                                          {route.code}
+                                        </option>
+                                      ))}
+                                    </select>
+                                  </label>
+                                </div>
+
+                                <div className="rx-calc">
+                                  <div className="rx-calc-head">
+                                    <Calculator size={15} />
+                                    Calculation
+                                  </div>
+                                  <div className="rx-formula">Formula: {calculation.formula}</div>
+
+                                  <div className="rx-strip-grid">
+                                    <div className="rx-strip-card">
+                                      <span>Single Dose</span>
+                                      <strong>1 tablet/capsule</strong>
+                                      <small>ETB {calculation.single_unit_price.toFixed(2)}</small>
+                                    </div>
+                                    <div className="rx-strip-card">
+                                      <span>1 Strip</span>
+                                      <strong>{calculation.strip_size} single doses</strong>
+                                      <small>ETB {calculation.strip_price.toFixed(2)}</small>
+                                    </div>
+                                  </div>
+
+                                  <div className="rx-required">
+                                    Required: {calculation.required_units} single doses
+                                  </div>
+                                  <div className="rx-dispense">
+                                    Dispense: {calculation.strips} strip(s) ×{" "}
+                                    {calculation.strip_size} = {calculation.dispense_units} single doses
+                                  </div>
+                                  <div className="rx-price">
+                                    Price: {calculation.strips} strip(s) × ETB{" "}
+                                    {calculation.strip_price.toFixed(2)} = ETB{" "}
+                                    {calculation.total_price.toFixed(2)}
+                                  </div>
+                                </div>
+
+                                <div className="rx-counseling">
+                                  <div className="rx-calc-head neutral">
+                                    <MessageSquareText size={15} />
+                                    Counseling Note
+                                  </div>
+                                  <textarea
+                                    rows="2"
+                                    value={item.counseling_note}
+                                    onChange={(event) =>
+                                      setCart((current) => {
+                                        const updated = [...current];
+                                        updated[index] = {
+                                          ...updated[index],
+                                          counseling_note: event.target.value,
+                                        };
+                                        return updated;
+                                      })
+                                    }
+                                  />
+                                </div>
+                              </div>
+                            )}
+                          </td>
+
+                          <td>
+                            {/* Unit price is fixed by inventory — display only */}
                             <span
-                              style={{
-                                fontSize: "0.78rem",
-                                color: "#64748b",
-                                display: "block",
-                              }}
+                              className="price-fixed"
+                              title="Unit price is determined by inventory and cannot be edited in POS"
                             >
-                              {item.brand_name}
+                              ETB {numberOr(item.current_price, 0).toFixed(2)}
                             </span>
-                          )}
+                          </td>
 
-                          <span
-                            style={{
-                              fontSize: "0.75rem",
-                              color: "#64748b",
-                            }}
-                          >
-                            {item.strength}
-                            {item.batch_number
-                              ? ` · Batch ${item.batch_number}`
-                              : ""}
-                            {item.expiry_date
-                              ? ` · Exp ${item.expiry_date}`
-                              : ""}
-                          </span>
+                          <td>
+                            <input
+                              className="qty-input"
+                              type="number"
+                              min="1"
+                              max={item.stock_on_hand}
+                              value={item.quantity}
+                              onChange={(event) =>
+                                updateQuantity(index, event.target.value)
+                              }
+                              aria-label={`Quantity for ${item.generic_name}`}
+                            />
+                            <small className="muted-line">Stock: {item.stock_on_hand}</small>
+                          </td>
 
-                          {item.has_rx && (
-                            <div
-                              style={{
-                                marginTop: "0.75rem",
-                                background: "#f8fafc",
-                                padding: "0.75rem",
-                                border: "1px solid #e2e8f0",
-                                borderRadius: "10px",
-                              }}
+                          <td>
+                            <strong className="td-strong">ETB {lineTotal.toFixed(2)}</strong>
+                          </td>
+
+                          <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              data-tip="Prescription / dispensing"
+                              onClick={() => openDrawer(index)}
+                              aria-label="Open prescription dispensing"
                             >
-                              <div
-                                style={{
-                                  display: "grid",
-                                  gridTemplateColumns:
-                                    "repeat(4, minmax(90px, 1fr))",
-                                  gap: "0.5rem",
-                                  marginBottom: "0.65rem",
-                                }}
-                              >
-                                <label style={{ fontSize: "0.75rem" }}>
-                                  Dose per admin
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    value={item.dose_per_admin}
-                                    onChange={(event) =>
-                                      updateRx(
-                                        index,
-                                        "dose_per_admin",
-                                        event.target.value,
-                                      )
-                                    }
-                                    style={{
-                                      width: "100%",
-                                      marginTop: "4px",
-                                      padding: "0.45rem",
-                                      border: "1px solid #cbd5e1",
-                                      borderRadius: "7px",
-                                    }}
-                                  />
-                                </label>
+                              <Stethoscope size={16} />
+                            </button>
 
-                                <label style={{ fontSize: "0.75rem" }}>
-                                  Frequency
-                                  <select
-                                    value={item.frequency_code}
-                                    onChange={(event) =>
-                                      updateRx(
-                                        index,
-                                        "frequency_code",
-                                        event.target.value,
-                                      )
-                                    }
-                                    style={{
-                                      width: "100%",
-                                      marginTop: "4px",
-                                      padding: "0.45rem",
-                                      border: "1px solid #cbd5e1",
-                                      borderRadius: "7px",
-                                    }}
-                                  >
-                                    {FREQUENCIES.map((frequency) => (
-                                      <option
-                                        key={frequency.code}
-                                        value={frequency.code}
-                                      >
-                                        {frequency.code}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-
-                                <label style={{ fontSize: "0.75rem" }}>
-                                  Duration (days)
-                                  <input
-                                    type="number"
-                                    min="1"
-                                    value={item.duration_days}
-                                    disabled={
-                                      getFrequency(item.frequency_code)
-                                        .per_day === null
-                                    }
-                                    onChange={(event) =>
-                                      updateRx(
-                                        index,
-                                        "duration_days",
-                                        event.target.value,
-                                      )
-                                    }
-                                    style={{
-                                      width: "100%",
-                                      marginTop: "4px",
-                                      padding: "0.45rem",
-                                      border: "1px solid #cbd5e1",
-                                      borderRadius: "7px",
-                                    }}
-                                  />
-                                </label>
-
-                                <label style={{ fontSize: "0.75rem" }}>
-                                  Route
-                                  <select
-                                    value={item.route_of_admin}
-                                    onChange={(event) =>
-                                      updateRx(
-                                        index,
-                                        "route_of_admin",
-                                        event.target.value,
-                                      )
-                                    }
-                                    style={{
-                                      width: "100%",
-                                      marginTop: "4px",
-                                      padding: "0.45rem",
-                                      border: "1px solid #cbd5e1",
-                                      borderRadius: "7px",
-                                    }}
-                                  >
-                                    {ROUTES.map((route) => (
-                                      <option
-                                        key={route.code}
-                                        value={route.code}
-                                      >
-                                        {route.code}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                              </div>
-
-                              <div
-                                style={{
-                                  padding: "0.7rem",
-                                  background: "#eff6ff",
-                                  borderRadius: "8px",
-                                  border: "1px solid #bfdbfe",
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: "0.4rem",
-                                    fontWeight: 800,
-                                    color: "#1e40af",
-                                  }}
-                                >
-                                  <Calculator size={15} />
-                                  Calculation
-                                </div>
-
-                                <div
-                                  style={{
-                                    color: "#1e3a8a",
-                                    marginTop: "0.4rem",
-                                    fontSize: "0.82rem",
-                                  }}
-                                >
-                                  Formula: {calculation.formula}
-                                </div>
-
-                                <div
-                                  style={{
-                                    display: "grid",
-                                    gridTemplateColumns: "1fr 1fr",
-                                    gap: "0.5rem",
-                                    marginTop: "0.65rem",
-                                  }}
-                                >
-                                  <div
-                                    className="rx-strip-card"
-                                    style={{
-                                      padding: "0.65rem",
-                                      background: "#ffffff",
-                                      borderRadius: "8px",
-                                      border: "1px solid #bfdbfe",
-                                    }}
-                                  >
-                                    <div
-                                      style={{
-                                        fontSize: "0.7rem",
-                                        color: "#64748b",
-                                        fontWeight: 800,
-                                        textTransform: "uppercase",
-                                      }}
-                                    >
-                                      Single Dose
-                                    </div>
-                                    <strong
-                                      style={{
-                                        display: "block",
-                                        marginTop: "0.2rem",
-                                        color: "#0f172a",
-                                      }}
-                                    >
-                                      1 tablet/capsule
-                                    </strong>
-                                    <span
-                                      style={{
-                                        fontSize: "0.75rem",
-                                        color: "#64748b",
-                                      }}
-                                    >
-                                      ETB{" "}
-                                      {calculation.single_unit_price.toFixed(2)}
-                                    </span>
-                                  </div>
-
-                                  <div
-                                    className="rx-strip-card"
-                                    style={{
-                                      padding: "0.65rem",
-                                      background: "#ffffff",
-                                      borderRadius: "8px",
-                                      border: "1px solid #bfdbfe",
-                                    }}
-                                  >
-                                    <div
-                                      style={{
-                                        fontSize: "0.7rem",
-                                        color: "#64748b",
-                                        fontWeight: 800,
-                                        textTransform: "uppercase",
-                                      }}
-                                    >
-                                      1 STRIP
-                                    </div>
-                                    <strong
-                                      style={{
-                                        display: "block",
-                                        marginTop: "0.2rem",
-                                        color: "#0f172a",
-                                      }}
-                                    >
-                                      {calculation.strip_size} single doses
-                                    </strong>
-                                    <span
-                                      style={{
-                                        fontSize: "0.75rem",
-                                        color: "#64748b",
-                                      }}
-                                    >
-                                      ETB {calculation.strip_price.toFixed(2)}
-                                    </span>
-                                  </div>
-                                </div>
-
-                                <div
-                                  style={{
-                                    color: "#166534",
-                                    fontWeight: 900,
-                                    marginTop: "0.7rem",
-                                  }}
-                                >
-                                  Required: {calculation.required_units} single
-                                  doses
-                                </div>
-
-                                <div
-                                  style={{
-                                    color: "#92400e",
-                                    fontWeight: 800,
-                                    fontSize: "0.82rem",
-                                    marginTop: "0.25rem",
-                                  }}
-                                >
-                                  Dispense: {calculation.strips} strip(s) ×{" "}
-                                  {calculation.strip_size} ={" "}
-                                  {calculation.dispense_units} single doses
-                                </div>
-
-                                <div
-                                  style={{
-                                    color: "#1e40af",
-                                    fontWeight: 900,
-                                    marginTop: "0.35rem",
-                                  }}
-                                >
-                                  Price: {calculation.strips} strip(s) × ETB{" "}
-                                  {calculation.strip_price.toFixed(2)} = ETB{" "}
-                                  {calculation.total_price.toFixed(2)}
-                                </div>
-                              </div>
-
-                              <div
-                                style={{
-                                  marginTop: "0.65rem",
-                                  padding: "0.7rem",
-                                  background: "#fff",
-                                  border: "1px solid #e2e8f0",
-                                  borderRadius: "8px",
-                                }}
-                              >
-                                <div
-                                  style={{
-                                    display: "flex",
-                                    alignItems: "center",
-                                    gap: "0.4rem",
-                                    fontWeight: 800,
-                                    color: "#334155",
-                                  }}
-                                >
-                                  <MessageSquareText size={15} />
-                                  Counseling Note
-                                </div>
-
-                                <textarea
-                                  rows="2"
-                                  value={item.counseling_note}
-                                  onChange={(event) =>
-                                    setCart((current) => {
-                                      const updated = [...current];
-                                      updated[index] = {
-                                        ...updated[index],
-                                        counseling_note: event.target.value,
-                                      };
-                                      return updated;
-                                    })
-                                  }
-                                  style={{
-                                    width: "100%",
-                                    marginTop: "0.5rem",
-                                    padding: "0.55rem",
-                                    border: "1px solid #cbd5e1",
-                                    borderRadius: "7px",
-                                    resize: "vertical",
-                                  }}
-                                />
-                              </div>
-                            </div>
-                          )}
-                        </td>
-
-                        <td>
-                          <div
-                            style={{
-                              display: "inline-flex",
-                              alignItems: "center",
-                              minWidth: "90px",
-                              padding: "0.45rem 0.65rem",
-                              background: "#f8fafc",
-                              border: "1px solid #e2e8f0",
-                              borderRadius: "7px",
-                              color: "#0f172a",
-                              fontWeight: 800,
-                              whiteSpace: "nowrap",
-                            }}
-                            title="Unit price is determined by inventory and cannot be edited in POS"
-                          >
-                            ETB {numberOr(item.current_price, 0).toFixed(2)}
-                          </div>
-                        </td>
-
-                        <td>
-                          <input
-                            type="number"
-                            min="1"
-                            max={item.stock_on_hand}
-                            value={item.quantity}
-                            onChange={(event) =>
-                              updateQuantity(index, event.target.value)
-                            }
-                            style={{
-                              width: "75px",
-                              padding: "0.45rem",
-                              border: "1px solid #cbd5e1",
-                              borderRadius: "7px",
-                            }}
-                          />
-                          <small
-                            style={{
-                              display: "block",
-                              marginTop: "4px",
-                              color: "#64748b",
-                            }}
-                          >
-                            Stock: {item.stock_on_hand}
-                          </small>
-                        </td>
-
-                        <td>
-                          <strong>ETB {lineTotal.toFixed(2)}</strong>
-                        </td>
-
-                        <td style={{ textAlign: "right" }}>
-                          <button
-                            type="button"
-                            onClick={() => openDrawer(index)}
-                            style={{
-                              background: "#eff6ff",
-                              color: "#2563eb",
-                              border: "none",
-                              padding: "0.5rem 0.7rem",
-                              borderRadius: "7px",
-                              cursor: "pointer",
-                              marginRight: "5px",
-                              fontWeight: 800,
-                              display: "inline-flex",
-                              alignItems: "center",
-                              gap: "4px",
-                            }}
-                          >
-                            <Stethoscope size={16} />
-                            Rx
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => removeFromCart(index)}
-                            style={{
-                              background: "#fee2e2",
-                              color: "#dc2626",
-                              border: "none",
-                              padding: "0.5rem",
-                              borderRadius: "7px",
-                              cursor: "pointer",
-                            }}
-                          >
-                            <Trash2 size={16} />
-                          </button>
-                        </td>
-                      </tr>
-                    );
-                  })
-                )}
-              </tbody>
-            </table>
+                            <button
+                              type="button"
+                              className="icon-btn remove"
+                              data-tip="Remove item"
+                              onClick={() => removeFromCart(index)}
+                              aria-label={`Remove ${item.generic_name}`}
+                            >
+                              <Trash2 size={16} />
+                            </button>
+                          </td>
+                        </tr>
+                      );
+                    })
+                  )}
+                </tbody>
+              </table>
+            </div>
           </div>
-        </div>
+        </section>
 
-        <aside
-          style={{
-            background: "#f8fafc",
-            padding: "1.5rem",
-            borderRadius: "14px",
-            border: "1px solid #e2e8f0",
-            position: "sticky",
-            top: "1rem",
-          }}
-        >
-          <h3
-            style={{
-              marginTop: 0,
-              borderBottom: "2px solid #e2e8f0",
-              paddingBottom: "0.75rem",
-            }}
-          >
-            Order Summary
-          </h3>
+        {/* ══ RIGHT · ORDER SUMMARY ══ */}
+        <aside className="pos-sidebar dot-grid">
+          <h3 className="pos-summary-title">Order Summary</h3>
 
-          {cart.length > 1 && (
-            <div
-              style={{
-                marginBottom: "1rem",
-                padding: "1rem",
-                background: hasInteractions ? "#fef2f2" : "#f0fdf4",
-                border: `1px solid ${hasInteractions ? "#fecaca" : "#bbf7d0"}`,
-                borderRadius: "10px",
-              }}
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.5rem",
-                }}
-              >
-                {hasInteractions ? (
-                  <AlertTriangle size={18} color="#dc2626" />
+          {aiWarnings.length > 0 && (
+            <div className={`interaction-box ${hasCriticalInteractions ? 'danger' : 'warn'}`}>
+              <div className="interaction-head">
+                {hasCriticalInteractions ? (
+                  <AlertTriangle size={18} />
                 ) : (
-                  <ShieldCheck size={18} color="#16a34a" />
+                  <ShieldCheck size={18} />
                 )}
-
-                <strong
-                  style={{
-                    color: hasInteractions ? "#991b1b" : "#166534",
-                  }}
-                >
+                <strong>
                   {aiLoading
-                    ? "Checking Multiple Drugs..."
-                    : hasInteractions
-                      ? "Interaction Warning"
-                      : "Multi-Drug Check Passed"}
+                    ? "Checking interactions…"
+                    : hasCriticalInteractions
+                      ? `${hasCriticalInteractions} critical interaction${hasCriticalInteractions > 1 ? 's' : ''}`
+                      : "Interaction Notice"}
                 </strong>
               </div>
 
-              {hasInteractions && !aiLoading && (
-                <div style={{ marginTop: "0.75rem" }}>
-                  {aiWarnings.length === 0 ? (
-                    <p
-                      style={{
-                        margin: 0,
-                        fontSize: "0.82rem",
-                        color: "#7f1d1d",
-                      }}
-                    >
-                      Potential interaction detected. Review before dispensing.
-                    </p>
-                  ) : (
-                    aiWarnings.map((warning, index) => (
-                      <div
-                        key={index}
-                        style={{
-                          marginTop: index ? "0.75rem" : 0,
-                          paddingTop: index ? "0.75rem" : 0,
-                          borderTop: index ? "1px solid #fecaca" : "none",
-                        }}
-                      >
-                        <span
-                          style={{
-                            display: "inline-block",
-                            padding: "0.2rem 0.45rem",
-                            borderRadius: "999px",
-                            background: "#fee2e2",
-                            color: "#991b1b",
-                            fontSize: "0.68rem",
-                            fontWeight: 900,
-                          }}
-                        >
-                          {warning.severity || "WARNING"}
-                        </span>
-
-                        <strong
-                          style={{
-                            display: "block",
-                            marginTop: "0.25rem",
-                            color: "#7f1d1d",
-                          }}
-                        >
-                          {warning.title || "Drug interaction"}
-                        </strong>
-
-                        <p
-                          style={{
-                            margin: "0.25rem 0 0",
-                            color: "#7f1d1d",
-                            fontSize: "0.78rem",
-                          }}
-                        >
-                          {warning.warning || warning.message}
-                        </p>
-                      </div>
-                    ))
-                  )}
+              {!aiLoading && aiWarnings.slice(0, 2).map((warning) => (
+                <div key={warning.id || warning.drugs?.join('|')} className="interaction-warning">
+                  <span className={`badge ${warning.severity === 1 ? 'badge-danger' : 'badge-warning'}`}>
+                    {warning.title}
+                  </span>
+                  <strong>{warning.drugs?.join(' + ')}</strong>
+                  <p>{warning.clinical_effect || warning.recommended_action}</p>
                 </div>
+              ))}
+              {!aiLoading && aiWarnings.length > 2 && (
+                <p className="muted-line" style={{ marginTop: '0.5rem' }}>
+                  +{aiWarnings.length - 2} more interaction notice(s)
+                </p>
+              )}
+
+              {!aiLoading && (
+                <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: '0.6rem' }} onClick={() => setShowDetails(true)}>
+                  View Details
+                </button>
               )}
             </div>
           )}
 
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              marginBottom: "0.6rem",
-            }}
-          >
+          <div className="summary-row">
             <span>Medicines</span>
             <strong>{cart.length}</strong>
           </div>
 
-          <div
-            style={{
-              display: "flex",
-              justifyContent: "space-between",
-              fontSize: "1.3rem",
-              fontWeight: 900,
-              borderTop: "1px solid #cbd5e1",
-              paddingTop: "1rem",
-              marginTop: "0.5rem",
-              marginBottom: "1rem",
-            }}
-          >
+          <div className="summary-total">
             <span>Total</span>
-            <span style={{ color: "#2563eb" }}>ETB {calculateTotal}</span>
+            <span>ETB {calculateTotal}</span>
           </div>
 
           {stockProblems.length > 0 && (
-            <div
-              style={{
-                padding: "0.8rem",
-                background: "#fff7ed",
-                border: "1px solid #fed7aa",
-                color: "#9a3412",
-                borderRadius: "8px",
-                marginBottom: "1rem",
-                fontSize: "0.8rem",
-              }}
-            >
+            <div className="stock-problem">
               <strong>Stock problem</strong>
               <div>One or more quantities exceed available stock.</div>
             </div>
@@ -1572,51 +1077,20 @@ export const POS = ({
           <button
             type="button"
             onClick={handleCheckout}
-            disabled={
-              cart.length === 0 || aiLoading || stockProblems.length > 0
-            }
-            style={{
-              width: "100%",
-              padding: "0.9rem",
-              background:
-                cart.length === 0 || aiLoading || stockProblems.length > 0
-                  ? "#94a3b8"
-                  : "#10b981",
-              color: "white",
-              border: "none",
-              borderRadius: "9px",
-              fontSize: "1.05rem",
-              fontWeight: 900,
-              cursor:
-                cart.length === 0 || aiLoading || stockProblems.length > 0
-                  ? "not-allowed"
-                  : "pointer",
-              display: "flex",
-              alignItems: "center",
-              justifyContent: "center",
-              gap: "0.5rem",
-            }}
+            disabled={checkoutBlocked}
+            className="btn-scan checkout-btn"
           >
-            <ShoppingCart size={20} />
-            {aiLoading ? "Checking Drugs..." : "Checkout & Pay"}
+            <ShoppingCart size={19} />
+            {aiLoading ? "Checking Drugs…" : "Checkout & Pay"}
           </button>
+
           <button
             type="button"
-            onClick={() => printReceipt({ pharmacyName: 'My Pharmacy' })}
+            onClick={() => printReceipt()}
             disabled={cart.length === 0}
-            style={{
-              marginTop: '10px',
-              width: '100%',
-              padding: '0.8rem',
-              background: cart.length === 0 ? '#94a3b8' : '#2563eb',
-              color: 'white',
-              border: 'none',
-              borderRadius: '9px',
-              fontSize: '0.98rem',
-              fontWeight: 800,
-              cursor: cart.length === 0 ? 'not-allowed' : 'pointer',
-            }}
+            className="btn btn-secondary print-btn"
           >
+            <Printer size={16} />
             Print Receipt
           </button>
         </aside>
@@ -1625,83 +1099,34 @@ export const POS = ({
       {dispensingDrawer.open && (
         <>
           <div
-            onClick={() =>
-              setDispensingDrawer({ open: false, itemIndex: null })
-            }
-            style={{
-              position: "fixed",
-              inset: 0,
-              background: "rgba(15, 23, 42, 0.45)",
-              zIndex: 999,
-            }}
+            className="drawer-backdrop"
+            onClick={() => setDispensingDrawer({ open: false, itemIndex: null })}
           />
 
-          <div
-            style={{
-              position: "fixed",
-              top: 0,
-              right: 0,
-              bottom: 0,
-              width: "min(430px, 94vw)",
-              background: "white",
-              boxShadow: "-10px 0 40px rgba(15, 23, 42, 0.2)",
-              zIndex: 1000,
-              display: "flex",
-              flexDirection: "column",
-            }}
-          >
-            <div
-              style={{
-                padding: "1.3rem 1.5rem",
-                borderBottom: "1px solid #e2e8f0",
-                display: "flex",
-                justifyContent: "space-between",
-                alignItems: "center",
-              }}
-            >
+          <div className="drawer-panel slide-in-right" role="dialog" aria-modal="true" aria-label="Prescription dispensing">
+            <div className="drawer-header">
               <div>
-                <strong style={{ fontSize: "1.1rem" }}>
-                  Prescription / Dispensing
-                </strong>
-                <div style={{ color: "#64748b", fontSize: "0.8rem" }}>
+                <strong>Prescription / Dispensing</strong>
+                <div className="muted-line">
                   {drawerItem?.generic_name} {drawerItem?.strength}
                 </div>
               </div>
 
               <button
                 type="button"
-                onClick={() =>
-                  setDispensingDrawer({ open: false, itemIndex: null })
-                }
-                style={{
-                  background: "#f1f5f9",
-                  border: "none",
-                  borderRadius: "8px",
-                  padding: "0.5rem",
-                  cursor: "pointer",
-                }}
+                className="modal-close-btn"
+                onClick={() => setDispensingDrawer({ open: false, itemIndex: null })}
+                aria-label="Close dispensing panel"
               >
-                <X size={20} />
+                <X size={18} />
               </button>
             </div>
 
-            <div
-              style={{
-                padding: "1.5rem",
-                overflowY: "auto",
-                flex: 1,
-              }}
-            >
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: "1rem",
-                  fontSize: "0.85rem",
-                  fontWeight: 700,
-                }}
-              >
+            <div className="drawer-body">
+              <label className="form-group">
                 Dose per admin
                 <input
+                  className="form-control"
                   type="number"
                   min="1"
                   value={drawerForm.dose_per_admin}
@@ -1711,26 +1136,13 @@ export const POS = ({
                       dose_per_admin: event.target.value,
                     }))
                   }
-                  style={{
-                    width: "100%",
-                    marginTop: "0.4rem",
-                    padding: "0.7rem",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "8px",
-                  }}
                 />
               </label>
 
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: "1rem",
-                  fontSize: "0.85rem",
-                  fontWeight: 700,
-                }}
-              >
+              <label className="form-group">
                 Frequency
                 <select
+                  className="form-control"
                   value={drawerForm.frequency_code}
                   onChange={(event) =>
                     setDrawerForm((current) => ({
@@ -1738,13 +1150,6 @@ export const POS = ({
                       frequency_code: event.target.value,
                     }))
                   }
-                  style={{
-                    width: "100%",
-                    marginTop: "0.4rem",
-                    padding: "0.7rem",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "8px",
-                  }}
                 >
                   {FREQUENCIES.map((frequency) => (
                     <option key={frequency.code} value={frequency.code}>
@@ -1754,16 +1159,10 @@ export const POS = ({
                 </select>
               </label>
 
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: "1rem",
-                  fontSize: "0.85rem",
-                  fontWeight: 700,
-                }}
-              >
+              <label className="form-group">
                 Duration (days)
                 <input
+                  className="form-control"
                   type="number"
                   min="1"
                   value={drawerForm.duration_days}
@@ -1776,34 +1175,14 @@ export const POS = ({
                       duration_days: event.target.value,
                     }))
                   }
-                  style={{
-                    width: "100%",
-                    marginTop: "0.4rem",
-                    padding: "0.7rem",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "8px",
-                  }}
                 />
               </label>
 
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: "1rem",
-                  fontSize: "0.85rem",
-                  fontWeight: 700,
-                }}
-              >
+              <label className="form-group">
                 Strip Size
-                <div
-                  style={{
-                    display: "flex",
-                    alignItems: "center",
-                    gap: "0.5rem",
-                    marginTop: "0.4rem",
-                  }}
-                >
+                <div className="strip-row">
                   <input
+                    className="form-control"
                     type="number"
                     min="1"
                     value={drawerForm.package_capacity || 10}
@@ -1816,44 +1195,22 @@ export const POS = ({
                         ),
                       }))
                     }
-                    style={{
-                      flex: 1,
-                      padding: "0.7rem",
-                      border: "1px solid #cbd5e1",
-                      borderRadius: "8px",
-                    }}
                   />
-                  <span style={{ color: "#64748b", fontSize: "0.8rem" }}>
-                    single doses / strip
-                  </span>
+                  <span className="form-hint">single doses / strip</span>
                 </div>
-                <small
-                  style={{
-                    display: "block",
-                    marginTop: "4px",
-                    color: "#64748b",
-                    fontWeight: 500,
-                  }}
-                >
-                  Example: 10 tablets = 1 strip
-                </small>
-                  {drawerCalculation && (
-                    <div style={{ marginTop: '8px', color: '#0f172a', fontWeight: 700 }}>
-                      Strips required: {drawerCalculation.strips} strip(s) — {drawerCalculation.dispense_units} units
-                    </div>
-                  )}
+                <small className="form-hint">Example: 10 tablets = 1 strip</small>
+                {drawerCalculation && (
+                  <div className="strip-preview">
+                    Strips required: {drawerCalculation.strips} strip(s) —{" "}
+                    {drawerCalculation.dispense_units} units
+                  </div>
+                )}
               </label>
 
-              <label
-                style={{
-                  display: "block",
-                  marginBottom: "1.5rem",
-                  fontSize: "0.85rem",
-                  fontWeight: 700,
-                }}
-              >
+              <label className="form-group">
                 Route
                 <select
+                  className="form-control"
                   value={drawerForm.route_of_admin}
                   onChange={(event) =>
                     setDrawerForm((current) => ({
@@ -1861,13 +1218,6 @@ export const POS = ({
                       route_of_admin: event.target.value,
                     }))
                   }
-                  style={{
-                    width: "100%",
-                    marginTop: "0.4rem",
-                    padding: "0.7rem",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "8px",
-                  }}
                 >
                   {ROUTES.map((route) => (
                     <option key={route.code} value={route.code}>
@@ -1877,52 +1227,15 @@ export const POS = ({
                 </select>
               </label>
 
-              <div
-                style={{
-                  background: "#eff6ff",
-                  border: "1px solid #bfdbfe",
-                  padding: "1rem",
-                  borderRadius: "10px",
-                  marginBottom: "1rem",
-                }}
-              >
-                <h4
-                  style={{
-                    margin: "0 0 0.6rem",
-                    color: "#1e40af",
-                  }}
-                >
-                  Calculation
-                </h4>
-
+              <div className="drawer-calc">
+                <h4>Calculation</h4>
                 {drawerCalculation && (
                   <>
-                    <div
-                      style={{
-                        fontSize: "0.85rem",
-                        color: "#1e3a8a",
-                      }}
-                    >
-                      Formula: {drawerCalculation.formula}
-                    </div>
-
-                    <div
-                      style={{
-                        marginTop: "0.5rem",
-                        fontWeight: 900,
-                        color: "#166534",
-                      }}
-                    >
+                    <div className="rx-formula">Formula: {drawerCalculation.formula}</div>
+                    <div className="rx-required" style={{ marginTop: '0.5rem' }}>
                       Required: {drawerCalculation.required_units} units
                     </div>
-
-                    <div
-                      style={{
-                        marginTop: "0.4rem",
-                        fontWeight: 900,
-                        color: "#1e40af",
-                      }}
-                    >
+                    <div className="rx-price" style={{ marginTop: '0.35rem' }}>
                       Price: {drawerCalculation.strips} strip(s) × ETB{" "}
                       {drawerCalculation.strip_price.toFixed(2)} = ETB{" "}
                       {drawerCalculation.total_price.toFixed(2)}
@@ -1931,15 +1244,10 @@ export const POS = ({
                 )}
               </div>
 
-              <label
-                style={{
-                  display: "block",
-                  fontSize: "0.85rem",
-                  fontWeight: 800,
-                }}
-              >
+              <label className="form-group">
                 Counseling Note
                 <textarea
+                  className="form-control"
                   rows="5"
                   value={drawerForm.counseling_note}
                   onChange={(event) =>
@@ -1948,38 +1256,12 @@ export const POS = ({
                       counseling_note: event.target.value,
                     }))
                   }
-                  style={{
-                    width: "100%",
-                    marginTop: "0.4rem",
-                    padding: "0.7rem",
-                    border: "1px solid #cbd5e1",
-                    borderRadius: "8px",
-                    resize: "vertical",
-                  }}
                 />
               </label>
             </div>
 
-            <div
-              style={{
-                padding: "1rem 1.5rem",
-                borderTop: "1px solid #e2e8f0",
-              }}
-            >
-              <button
-                type="button"
-                onClick={applyDrawer}
-                style={{
-                  width: "100%",
-                  padding: "0.85rem",
-                  background: "#2563eb",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "9px",
-                  fontWeight: 900,
-                  cursor: "pointer",
-                }}
-              >
+            <div className="drawer-footer">
+              <button type="button" className="btn-scan" onClick={applyDrawer} style={{ width: '100%' }}>
                 Apply to POS
               </button>
             </div>
@@ -1988,141 +1270,91 @@ export const POS = ({
       )}
 
       {showInteractionConfirm && (
-        <div
-          style={{
-            position: "fixed",
-            inset: 0,
-            background: "rgba(15, 23, 42, 0.55)",
-            zIndex: 1100,
-            display: "flex",
-            alignItems: "center",
-            justifyContent: "center",
-            padding: "1rem",
-          }}
-        >
-          <div
-            style={{
-              background: "white",
-              padding: "2rem",
-              borderRadius: "14px",
-              maxWidth: "520px",
-              width: "100%",
-              boxShadow: "0 25px 60px rgba(0, 0, 0, 0.2)",
-            }}
-          >
-            <div
-              style={{
-                display: "flex",
-                alignItems: "center",
-                gap: "0.8rem",
-                marginBottom: "1rem",
-              }}
-            >
-              <AlertTriangle size={30} color="#dc2626" />
-              <h3 style={{ margin: 0 }}>Multi-Drug Interaction Detected</h3>
+        <div className="modal-overlay" style={{ zIndex: 1100 }}>
+          <div className="modal-card" style={{ maxWidth: '520px' }}>
+            <div className="interaction-confirm-head">
+              <AlertTriangle size={28} />
+              <h3>Critical Interaction — Pharmacist Review Required</h3>
             </div>
 
-            <p style={{ color: "#475569", lineHeight: 1.6 }}>
-              The selected medicines contain one or more potential interaction
-              warnings. Review the warnings before dispensing.
+            <p className="muted-line" style={{ lineHeight: 1.6 }}>
+              These medicines have a potentially serious interaction. Pharmacist
+              review is required before dispensing.
             </p>
 
-            <div
-              style={{
-                maxHeight: "220px",
-                overflowY: "auto",
-                marginBottom: "1rem",
-              }}
-            >
-              {aiWarnings.map((warning, index) => (
-                <div
-                  key={index}
-                  style={{
-                    padding: "0.8rem",
-                    background: "#fef2f2",
-                    border: "1px solid #fecaca",
-                    borderRadius: "8px",
-                    marginBottom: "0.5rem",
-                  }}
-                >
-                  <strong style={{ color: "#991b1b" }}>
-                    {warning.title || "Interaction"}
-                  </strong>
-                  <p
-                    style={{
-                      margin: "0.3rem 0 0",
-                      color: "#7f1d1d",
-                      fontSize: "0.85rem",
-                    }}
-                  >
-                    {warning.warning || warning.message}
-                  </p>
+            <div className="confirm-warnings">
+              {aiWarnings.filter((w) => w.severity === 1).map((warning) => (
+                <div key={warning.id || warning.drugs?.join('|')} className="interaction-warning boxed">
+                  <span className="badge badge-danger">{warning.title}</span>
+                  <strong>{warning.drugs?.join(' + ')}</strong>
+                  {warning.clinical_effect && <p>{warning.clinical_effect}</p>}
+                  {warning.recommended_action && <p><em>Recommended: {warning.recommended_action}</em></p>}
                 </div>
               ))}
             </div>
 
-            <label
-              style={{
-                display: "block",
-                marginBottom: "1rem",
-                fontWeight: 800,
-                fontSize: "0.85rem",
-              }}
-            >
-              Override / pharmacist review reason
+            <label className="form-group" style={{ margin: '1rem 0' }}>
+              Pharmacist review reason *
               <textarea
+                className="form-control"
                 rows="3"
                 value={overrideReason}
                 onChange={(event) => setOverrideReason(event.target.value)}
-                placeholder="Enter the clinical reason for proceeding..."
-                style={{
-                  width: "100%",
-                  marginTop: "0.4rem",
-                  padding: "0.7rem",
-                  border: "1px solid #cbd5e1",
-                  borderRadius: "8px",
-                }}
+                placeholder="Document the clinical reason for proceeding…"
               />
             </label>
 
-            <div
-              style={{
-                display: "flex",
-                justifyContent: "flex-end",
-                gap: "0.7rem",
-              }}
-            >
+            <div className="confirm-actions">
               <button
                 type="button"
+                className="btn btn-secondary"
                 onClick={() => setShowInteractionConfirm(false)}
-                style={{
-                  padding: "0.7rem 1rem",
-                  background: "#f1f5f9",
-                  color: "#334155",
-                  border: "none",
-                  borderRadius: "8px",
-                  fontWeight: 800,
-                  cursor: "pointer",
-                }}
               >
                 Cancel
               </button>
 
               <button
                 type="button"
+                className="btn btn-primary"
                 onClick={proceedCheckout}
                 disabled={!overrideReason.trim()}
-                style={{
-                  padding: "0.7rem 1rem",
-                  background: overrideReason.trim() ? "#dc2626" : "#fca5a5",
-                  color: "white",
-                  border: "none",
-                  borderRadius: "8px",
-                  fontWeight: 900,
-                  cursor: overrideReason.trim() ? "pointer" : "not-allowed",
-                }}
               >
-                Review & Proceed
+                Review &amp; Proceed
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Interaction details drawer (severity 1–3, full dataset info) */}
+      {showDetails && (
+        <div className="modal-overlay" style={{ zIndex: 1100 }} onClick={() => setShowDetails(false)}>
+          <div className="modal-card" style={{ maxWidth: '560px' }} onMouseDown={(e) => e.stopPropagation()}>
+            <div className="modal-header">
+              <h2>Interaction Details</h2>
+              <button type="button" className="modal-close-btn" onClick={() => setShowDetails(false)}>×</button>
+            </div>
+            <p className="muted-line" style={{ marginBottom: '0.9rem' }}>
+              Source: local structured DDI reference dataset. Clinical judgement and dose,
+              duration and patient factors always apply.
+            </p>
+            <div className="confirm-warnings" style={{ maxHeight: '50vh' }}>
+              {aiWarnings.map((warning) => (
+                <div key={warning.id || warning.drugs?.join('|')} className={`interaction-warning boxed ${warning.severity === 1 ? 'boxed-critical' : ''}`}>
+                  <span className={`badge ${warning.severity === 1 ? 'badge-danger' : warning.severity === 2 ? 'badge-warning' : 'badge-info'}`}>
+                    {warning.title}
+                  </span>
+                  <strong>{warning.drugs?.join(' + ')}</strong>
+                  {warning.category && <small className="muted-line">Category: {warning.category}</small>}
+                  {warning.mechanism && <p>Mechanism: {warning.mechanism}</p>}
+                  {warning.clinical_effect && <p>Effect: {warning.clinical_effect}</p>}
+                  {warning.recommended_action && <p><em>Recommended action: {warning.recommended_action}</em></p>}
+                </div>
+              ))}
+            </div>
+            <div className="confirm-actions">
+              <button type="button" className="btn btn-secondary" onClick={() => setShowDetails(false)}>
+                Close
               </button>
             </div>
           </div>

@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 640 360" role="img" aria-label="Smart reordering mockup">
+  <rect width="640" height="360" fill="#f4f5f7"/>
+  <rect x="24" y="24" width="592" height="312" rx="18" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="64" y="72" width="160" height="120" rx="14" fill="#fbeeee" stroke="#c25e5e" stroke-opacity="0.35"/>
+  <rect x="84" y="92" width="86" height="13" rx="6.5" fill="#c25e5e"/>
+  <rect x="84" y="122" width="54" height="26" rx="8" fill="#c25e5e" opacity="0.75"/>
+  <rect x="84" y="162" width="110" height="9" rx="4.5" fill="#ffffff"/>
+  <rect x="242" y="72" width="160" height="120" rx="14" fill="#fdf6ea" stroke="#b98a2e" stroke-opacity="0.35"/>
+  <rect x="262" y="92" width="86" height="13" rx="6.5" fill="#b98a2e"/>
+  <rect x="262" y="122" width="54" height="26" rx="8" fill="#b98a2e" opacity="0.75"/>
+  <rect x="262" y="162" width="110" height="9" rx="4.5" fill="#ffffff"/>
+  <rect x="420" y="72" width="160" height="120" rx="14" fill="#eef0f4" stroke="#8b95a7" stroke-opacity="0.35"/>
+  <rect x="440" y="92" width="86" height="13" rx="6.5" fill="#8b95a7"/>
+  <rect x="440" y="122" width="54" height="26" rx="8" fill="#8b95a7" opacity="0.75"/>
+  <rect x="440" y="162" width="110" height="9" rx="4.5" fill="#ffffff"/>
+  <rect x="64" y="222" width="512" height="66" rx="10" fill="#ffffff" stroke="#e2e6ee" stroke-width="1.5"/>
+  <rect x="82" y="242" width="180" height="11" rx="5.5" fill="#9aa4b5"/>
+  <rect x="300" y="240" width="250" height="14" rx="7" fill="#e6eaF2"/>
+  <rect x="300" y="240" width="96" height="14" rx="7" fill="#16181d"/>
+  <rect x="82" y="262" width="120" height="9" rx="4.5" fill="#dde2ec"/>
+
+</svg>

@@ -1,50 +1,159 @@
+/* ===================================================
+   NET-PHARMA DESIGN TOKENS
+   One neutral system — two carefully designed themes.
+   Light: white / near-white surfaces, charcoal text.
+   Dark:  soft black / deep charcoal surfaces.
+   No gold. No bright decorative accents.
+   =================================================== */
+
 :root {
-  /* Color Palette - Modern & Cool */
-  --primary: #2563eb;
-  --primary-hover: #1d4ed8;
-  --primary-light: #dbeafe;
-  --secondary: #10b981;
-  --secondary-hover: #059669;
-  --secondary-light: #d1fae5;
-  --danger: #ef4444;
-  --danger-hover: #dc2626;
-  --danger-light: #fee2e2;
-  --warning: #f59e0b;
-  --warning-light: #fef3c7;
-  --info: #06b6d4;
-  --info-light: #cffaff;
+  /* ── Brand neutrals ── */
+  --ink-900: #0b0d10;
+  --ink-800: #14171c;
+  --ink-700: #1d2129;
+  --ink-600: #2a2f3a;
+  --gray-500: #64748b;
+  --gray-400: #94a3b8;
+  --gray-300: #cbd5e1;
+  --gray-200: #e2e8f0;
 
-  /* Neutrals & Theme Surfaces */
-  --bg-main: #f8fafc;
+  /* ── Light theme surfaces ── */
+  --bg-main: #f7f8fa;
   --surface: #ffffff;
-  --surface-alt: #f1f5f9;
-  --border: #e2e8f0;
-  --border-focus: #93c5fd;
+  --surface-alt: #f1f3f6;
+  --surface-hover: #eef0f4;
+  --border: #e5e8ee;
+  --border-strong: #d4d9e2;
+  --dot-grid-color: rgba(15, 23, 42, 0.055);
 
-  /* Typography Colors */
-  --text-main: #0f172a;
+  /* ── Typography colors ── */
+  --text-main: #16181d;
+  --text-secondary: #3f4756;
   --text-muted: #64748b;
-  --text-light: #94a3b8;
+  --text-faint: #94a3b8;
   --text-on-dark: #f8fafc;
 
-  /* Sidebar Dark Theme */
-  --sidebar-bg: #0f172a;
-  --sidebar-hover: #1e293b;
-  --sidebar-active: #2563eb;
-  --sidebar-text: #94a3b8;
-  --sidebar-text-active: #ffffff;
+  /* ── Primary actions: soft black in light mode ── */
+  --primary: #16181d;
+  --primary-hover: #2a2f3a;
+  --primary-active: #3a4150;
+  --primary-text: #ffffff;
+  --focus-ring: rgba(22, 24, 29, 0.14);
+  --accent-subtle: #eef0f4;
 
-  /* Layout Boundaries & Shadows */
-  --radius-sm: 6px;
-  --radius-md: 10px;
+  /* ── Muted semantic colors (status only) ── */
+  --success: #15803d;
+  --success-bg: #ecfdf3;
+  --success-border: #bbe7cc;
+  --warning: #a16207;
+  --warning-bg: #fdf9ec;
+  --warning-border: #efe3b3;
+  --danger: #b91c1c;
+  --danger-bg: #fef3f2;
+  --danger-border: #f3cfcf;
+  --info: #1d4ed8;
+  --info-bg: #eff4ff;
+  --info-border: #ccd9fa;
+
+  /* Dark-theme-aware semantic (overridden below) */
+
+  /* ── Sidebar / shell ── */
+  --sidebar-bg: #ffffff;
+  --sidebar-surface: #f4f5f7;
+  --sidebar-hover: #eef0f4;
+  --sidebar-active-bg: #16181d;
+  --sidebar-text: #5b6472;
+  --sidebar-text-active: #ffffff;
+  --header-bg: rgba(255, 255, 255, 0.86);
+
+  /* ── Radii ── */
+  --radius-sm: 8px;
+  --radius-md: 12px;
   --radius-lg: 16px;
+  --radius-xl: 20px;
   --radius-full: 9999px;
 
-  --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-  --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
-  --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
-  --shadow-glow: 0 0 15px rgba(37, 99, 235, 0.25);
+  /* ── Shadows ── */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.05);
+  --shadow-sm: 0 1px 3px rgba(15, 23, 42, 0.06), 0 1px 2px rgba(15, 23, 42, 0.04);
+  --shadow-md: 0 4px 12px -2px rgba(15, 23, 42, 0.08), 0 2px 6px -2px rgba(15, 23, 42, 0.05);
+  --shadow-lg: 0 16px 40px -12px rgba(15, 23, 42, 0.18);
+  --shadow-xl: 0 24px 60px -16px rgba(15, 23, 42, 0.25);
 
-  --transition-fast: 150ms ease;
-  --transition-normal: 250ms cubic-bezier(0.4, 0, 0.2, 1);
+  /* ── Motion ── */
+  --transition-fast: 150ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-normal: 220ms cubic-bezier(0.4, 0, 0.2, 1);
+  --transition-slow: 320ms cubic-bezier(0.4, 0, 0.2, 1);
+
+  color-scheme: light;
+}
+
+/* ===================================================
+   DARK THEME
+   =================================================== */
+[data-theme="dark"] {
+  --bg-main: #101216;
+  --surface: #171a20;
+  --surface-alt: #1d2128;
+  --surface-hover: #232833;
+  --border: #272c36;
+  --border-strong: #333a47;
+  --dot-grid-color: rgba(255, 255, 255, 0.05);
+
+  --text-main: #f2f4f8;
+  --text-secondary: #c3cad6;
+  --text-muted: #8b95a7;
+  --text-faint: #667082;
+  --text-on-dark: #f8fafc;
+
+  /* Primary actions become light with dark text */
+  --primary: #f2f4f8;
+  --primary-hover: #ffffff;
+  --primary-active: #dde2ea;
+  --primary-text: #12151a;
+  --focus-ring: rgba(242, 244, 248, 0.18);
+  --accent-subtle: #232833;
+
+  /* Slightly lifted muted semantics for dark contrast */
+  --success: #4ade80;
+  --success-bg: rgba(74, 222, 128, 0.09);
+  --success-border: rgba(74, 222, 128, 0.22);
+  --warning: #fbbf24;
+  --warning-bg: rgba(251, 191, 36, 0.08);
+  --warning-border: rgba(251, 191, 36, 0.22);
+  --danger: #f87171;
+  --danger-bg: rgba(248, 113, 113, 0.08);
+  --danger-border: rgba(248, 113, 113, 0.22);
+  --info: #93b4ff;
+  --info-bg: rgba(147, 180, 255, 0.08);
+  --info-border: rgba(147, 180, 255, 0.22);
+
+  --sidebar-bg: #13161b;
+  --sidebar-surface: #1a1e25;
+  --sidebar-hover: #21262f;
+  --sidebar-active-bg: #f2f4f8;
+  --sidebar-text: #98a2b3;
+  --sidebar-text-active: #12151a;
+  --header-bg: rgba(16, 18, 22, 0.86);
+
+  --shadow-xs: 0 1px 2px rgba(0, 0, 0, 0.35);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --shadow-md: 0 4px 12px -2px rgba(0, 0, 0, 0.45), 0 2px 6px -2px rgba(0, 0, 0, 0.35);
+  --shadow-lg: 0 16px 40px -12px rgba(0, 0, 0, 0.55);
+  --shadow-xl: 0 24px 60px -16px rgba(0, 0, 0, 0.65);
+
+  color-scheme: dark;
+}
+
+/* Legacy aliases kept so existing pages keep working */
+:root {
+  --primary-light: var(--accent-subtle);
+  --secondary: var(--success);
+  --secondary-hover: var(--success);
+  --secondary-light: var(--success-bg);
+  --danger-hover: var(--danger);
+  --danger-light: var(--danger-bg);
+  --warning-light: var(--warning-bg);
+  --info-light: var(--info-bg);
+  --border-focus: var(--border-strong);
 }

@@ -1,30 +1,203 @@
-/* Inventory page — mobile responsive */
+/* ===================================================
+   INVENTORY — tabs, bin card, what-to-buy
+   =================================================== */
 
-/* Mobile: show cards, hide desktop table */
-@media (max-width: 767px) {
-  .inv-mobile-cards {
-    display: block;
-  }
-  .inv-desktop-table {
-    display: none;
-  }
-  .inv-summary-grid {
-    grid-template-columns: repeat(2, 1fr) !important;
-  }
+.inventory-page { width: 100%; }
+
+.inv-filters-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
 }
 
-/* Desktop: hide cards, show table */
+.inv-search { max-width: 320px; flex: 1; min-width: 200px; }
+
+.btn-sm { padding: 0.4rem 0.8rem; min-height: 34px; font-size: 0.78rem; }
+
+/* Mobile table / card visibility */
+.hide-mobile-table { display: none; }
+.show-mobile-table { display: block; }
+
 @media (min-width: 768px) {
-  .inv-mobile-cards {
-    display: none;
-  }
-  .inv-desktop-table {
-    display: block;
-  }
-  .inv-summary-grid {
-    grid-template-columns: repeat(4, 1fr) !important;
-  }
+  .hide-mobile-table { display: block; }
+  .show-mobile-table { display: none; }
 }
 
-/* Tab bar: hide scrollbar */
-.inv-tab-bar::-webkit-scrollbar { display: none; }
+/* Mobile card rows */
+.mobile-card-list { padding: 0.5rem; }
+
+.mobile-card {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.9rem 1rem;
+  margin-bottom: 0.6rem;
+  background: var(--surface);
+}
+
+.mobile-card-head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 0.6rem;
+}
+.mobile-card-head strong { font-size: 0.92rem; color: var(--text-main); min-width: 0; }
+
+.mobile-card-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  margin-top: 0.45rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+.mobile-card-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 0.7rem;
+  padding-top: 0.6rem;
+  border-top: 1px dashed var(--border);
+}
+
+/* ── Bin card ── */
+.bincard-wrap { max-width: 100%; }
+
+.bincard-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+
+.bincard-title {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  flex-wrap: wrap;
+  padding: 1rem 1.2rem;
+  border-radius: var(--radius-md);
+  border: 1px solid var(--border);
+  margin-bottom: 1rem;
+  color: var(--text-secondary);
+}
+.bincard-title svg { color: var(--text-muted); }
+.bincard-title strong { color: var(--text-main); }
+.bincard-med-name { font-weight: 700; color: var(--text-main); font-size: 1rem; }
+
+.bincard-stats {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+  gap: 0.65rem;
+  margin-bottom: 1.25rem;
+}
+
+.bincard-stat {
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.75rem 0.9rem;
+}
+.bincard-stat span { display: block; font-size: 0.72rem; color: var(--text-muted); font-weight: 600; }
+.bincard-stat strong { display: block; font-size: 1.3rem; margin-top: 0.2rem; color: var(--text-main); }
+.bincard-stat.danger { background: var(--danger-bg); border-color: var(--danger-border); }
+.bincard-stat.danger strong, .bincard-stat.danger span { color: var(--danger); }
+
+.bincard-batch-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.8rem;
+  margin-bottom: 1.1rem;
+}
+
+.batch-chips {
+  display: flex;
+  gap: 0.45rem;
+  flex-wrap: wrap;
+}
+.chip {
+  display: inline-flex;
+  gap: 0.3rem;
+  align-items: center;
+  font-size: 0.74rem;
+  padding: 0.32rem 0.6rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  color: var(--text-muted);
+}
+.chip strong { color: var(--text-main); }
+
+.in-cell  { color: var(--success); font-weight: 700; }
+.out-cell { color: var(--danger); font-weight: 700; }
+
+.buy-qty { color: var(--info); font-weight: 800; }
+
+/* ── What to buy priority cards ── */
+.wtb-priority-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.65rem;
+  margin-bottom: 1.1rem;
+}
+
+@media (min-width: 768px) {
+  .wtb-priority-grid { grid-template-columns: repeat(4, 1fr); }
+}
+
+.wtb-priority-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  padding: 0.9rem 1rem;
+  text-align: center;
+}
+.wtb-priority-card strong {
+  display: block;
+  font-size: 1.5rem;
+  margin-top: 0.35rem;
+  color: var(--text-main);
+}
+
+.wtb-card-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 0.4rem 0.8rem;
+  margin-top: 0.6rem;
+  font-size: 0.76rem;
+  color: var(--text-muted);
+}
+.wtb-card-grid strong { color: var(--text-main); display: block; font-size: 0.84rem; }
+
+/* Packaging stock-entry section */
+.packaging-section {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 1rem 1.1rem;
+  background: var(--surface-alt);
+}
+.packaging-section .drug-section-title {
+  border-bottom: none;
+  padding-bottom: 0.25rem;
+  margin-bottom: 0.75rem;
+}
+
+.packaging-total {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  padding: 0.62rem 0.85rem;
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  border: 1px dashed var(--border-strong);
+  font-weight: 800;
+  color: var(--text-main);
+  font-variant-numeric: tabular-nums;
+}

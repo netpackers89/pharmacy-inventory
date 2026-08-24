@@ -15,6 +15,10 @@ import {
   UserX,
   KeyRound,
   RefreshCw,
+  Loader2,
+  AlertTriangle,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import {
   usersAPI,
@@ -24,6 +28,8 @@ import {
 } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
+import { StatusBadge, FilterTabs, ConfirmDialog } from "../components/ui";
+import { TableSkeleton, EmptyState, ErrorState } from "../components/Feedback";
 
 const TABS = [
   { id: "users", icon: <Users size={16} />, label: "Users" },
@@ -40,7 +46,7 @@ export const Settings = () => {
   if (currentUser?.role !== "ADMIN") {
     return (
       <div className="settings-page">
-        <div style={{ textAlign: "center", padding: "5rem", color: "#ef4444" }}>
+        <div style={{ textAlign: "center", padding: "5rem", color: "var(--danger)" }}>
           <h2>Access Denied</h2>
           <p>Only administrators can access Settings.</p>
         </div>
@@ -323,7 +329,7 @@ const UsersPanel = () => {
                   border: "none",
                   fontSize: "1.5rem",
                   cursor: "pointer",
-                  color: "#64748b",
+                  color: "var(--text-muted)",
                 }}
               >
                 ×
@@ -445,518 +451,968 @@ const UsersPanel = () => {
 };
 
 // ─── SUPPLIERS PANEL ──────────────────────────────────────────────────────────
+const EMPTY_SUPPLIER = {
+  name: "",
+  contact_person: "",
+  phone: "",
+  email: "",
+  address: "",
+};
+
+/*
+ * SUPPLIER MANAGEMENT — soft deactivation.
+ * Inactive suppliers stay listed for admins but disappear from transaction
+ * dropdowns. Every mutation has an explicit loading state; failed requests
+ * keep the form open with values intact.
+ */
 const SuppliersPanel = () => {
-  const { toast, withLoading } = useToast();
+  const { toast } = useToast();
   const [suppliers, setSuppliers] = useState([]);
-  const [loading, setLoading] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
   const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ACTIVE");
+
   const [showModal, setShowModal] = useState(false);
   const [editSup, setEditSup] = useState(null);
-  const [form, setForm] = useState({
-    name: "",
-    contact_person: "",
-    phone: "",
-    email: "",
-    address: "",
-  });
+  const [form, setForm] = useState(EMPTY_SUPPLIER);
+  const [saving, setSaving] = useState(false);
+  const [formError, setFormError] = useState("");
+
+  // Status change confirmation
+  const [confirmTarget, setConfirmTarget] = useState(null); // supplier
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   const load = () => {
     setLoading(true);
+    setLoadError(false);
     suppliersAPI
       .getAll()
       .then((r) => {
-        setSuppliers(r.data);
+        setSuppliers(Array.isArray(r.data) ? r.data : []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setLoadError(true);
+        setLoading(false);
+      });
   };
   useEffect(() => {
     load();
   }, []);
 
-  const filtered = suppliers.filter((s) =>
-    s.name?.toLowerCase().includes(search.toLowerCase()),
-  );
+  const counts = {
+    ACTIVE: suppliers.filter((s) => s.status === "ACTIVE").length,
+    INACTIVE: suppliers.filter((s) => s.status === "INACTIVE").length,
+    ALL: suppliers.length,
+  };
+
+  const filtered = suppliers
+    .filter((s) => statusFilter === "ALL" || s.status === statusFilter)
+    .filter((s) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        s.name?.toLowerCase().includes(q) ||
+        s.contact_person?.toLowerCase().includes(q) ||
+        s.phone?.toLowerCase().includes(q) ||
+        s.email?.toLowerCase().includes(q)
+      );
+    });
 
   const openAdd = () => {
     setEditSup(null);
-    setForm({
-      name: "",
-      contact_person: "",
-      phone: "",
-      email: "",
-      address: "",
-    });
+    setForm(EMPTY_SUPPLIER);
+    setFormError("");
     setShowModal(true);
   };
+
   const openEdit = (s) => {
     setEditSup(s);
     setForm({
-      name: s.name,
+      name: s.name || "",
       contact_person: s.contact_person || "",
       phone: s.phone || "",
       email: s.email || "",
       address: s.address || "",
     });
+    setFormError("");
     setShowModal(true);
   };
 
+  const closeModal = () => {
+    if (saving) return; // close protection while saving
+    setShowModal(false);
+    setFormError("");
+  };
+
+  /*
+   * Save flow: loading state → API → database → success → refresh local state.
+   * On failure: stop loading, KEEP entered values, show the error, allow retry.
+   */
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (saving) return; // duplicate-submission guard
+
+    const name = form.name.trim();
+    if (!name) {
+      setFormError("Supplier name is required.");
+      return;
+    }
+
+    setSaving(true);
+    setFormError("");
     try {
+      const payload = {
+        name,
+        contact_person: form.contact_person.trim() || null,
+        phone: form.phone.trim() || null,
+        email: form.email.trim() || null,
+        address: form.address.trim() || null,
+      };
       if (editSup) {
-        await suppliersAPI.update(editSup.supplier_id, form);
+        await suppliersAPI.update(editSup.supplier_id, payload);
+        toast.success("Supplier updated successfully");
       } else {
-        await suppliersAPI.create(form);
+        await suppliersAPI.create(payload);
+        toast.success("Supplier added successfully");
       }
       setShowModal(false);
-      load();
+      load(); // refetch only this list — no full page reload
     } catch (err) {
-      toast.error(err.response?.data?.error || "Failed to save");
+      setFormError(err.response?.data?.error || "Unable to save the supplier. Please try again.");
+    } finally {
+      setSaving(false);
     }
   };
 
-  const toggleStatus = async (s) => {
-    const newStatus = s.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+  const confirmStatusChange = async () => {
+    if (!confirmTarget || confirmLoading) return;
+    const nextStatus =
+      confirmTarget.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    setConfirmLoading(true);
     try {
-      await suppliersAPI.update(s.supplier_id, { status: newStatus });
+      await suppliersAPI.changeStatus(confirmTarget.supplier_id, nextStatus);
+      toast.success(
+        `Supplier ${nextStatus === "ACTIVE" ? "activated" : "deactivated"}`
+      );
+      setConfirmTarget(null);
       load();
-    } catch {
-      toast.error("Operation failed");
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Unable to update the supplier. Please try again.");
+    } finally {
+      setConfirmLoading(false);
     }
   };
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "1.25rem",
-        }}
-      >
-        <h2 className="settings-section-title">Suppliers</h2>
+      <div className="mgmt-header">
+        <div>
+          <h2 className="settings-section-title">Supplier Management</h2>
+          <p className="form-hint">
+            Distributors and medical suppliers. Deactivating keeps all historical batches and resupplies linked.
+          </p>
+        </div>
         <button onClick={openAdd} className="settings-add-btn">
           <Plus size={15} /> Add Supplier
         </button>
       </div>
-      <div className="settings-search">
-        <Search size={15} />
-        <input
-          type="text"
-          placeholder="Search suppliers..."
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
-        />
+
+      <div className="mgmt-toolbar">
+        <div className="settings-search" style={{ marginBottom: 0 }}>
+          <Search size={15} />
+          <input
+            type="text"
+            placeholder="Search suppliers…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search suppliers"
+          />
+        </div>
+        <FilterTabs value={statusFilter} onChange={setStatusFilter} counts={counts} />
       </div>
-      <div
-        style={{
-          display: "grid",
-          gap: "1rem",
-          gridTemplateColumns: "repeat(auto-fill, minmax(280px, 1fr))",
-        }}
-      >
-        {loading && <p style={{ color: "#64748b" }}>Loading...</p>}
-        {!loading &&
-          filtered.map((s) => (
-            <div key={s.supplier_id} className="supplier-card">
-              <div
-                style={{
-                  display: "flex",
-                  justifyContent: "space-between",
-                  alignItems: "flex-start",
-                }}
-              >
-                <div>
-                  <h3
-                    style={{
-                      fontWeight: 800,
-                      color: "#0f172a",
-                      marginBottom: "0.25rem",
-                    }}
-                  >
-                    {s.name}
-                  </h3>
-                  <span
-                    className={`badge ${s.status === "ACTIVE" ? "badge-success" : "badge-danger"}`}
-                  >
-                    {s.status}
-                  </span>
-                </div>
-                <div style={{ display: "flex", gap: "0.35rem" }}>
-                  <button
-                    onClick={() => openEdit(s)}
-                    className="tbl-action-btn edit"
-                  >
-                    <Edit size={13} />
-                  </button>
-                  <button
-                    onClick={() => toggleStatus(s)}
-                    className={`tbl-action-btn ${s.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                  >
-                    {s.status === "ACTIVE" ? (
-                      <UserX size={13} />
-                    ) : (
-                      <UserCheck size={13} />
-                    )}
-                  </button>
-                </div>
-              </div>
-              <div
-                style={{
-                  marginTop: "0.75rem",
-                  fontSize: "0.82rem",
-                  color: "#475569",
-                  lineHeight: 1.8,
-                }}
-              >
-                {s.contact_person && <div>👤 {s.contact_person}</div>}
-                {s.phone && <div>📞 {s.phone}</div>}
-                {s.email && <div>📧 {s.email}</div>}
-                {s.address && <div>📍 {s.address}</div>}
-              </div>
-              <div
-                style={{
-                  marginTop: "0.75rem",
-                  display: "flex",
-                  gap: "1rem",
-                  fontSize: "0.8rem",
-                  color: "#64748b",
-                  borderTop: "1px solid #f1f5f9",
-                  paddingTop: "0.5rem",
-                }}
-              >
-                <span>{s.total_batches || 0} Batches</span>
-                <span>
-                  ETB {parseFloat(s.total_value || 0).toLocaleString()}
-                </span>
-              </div>
+
+      <div className="table-container">
+        {loading ? (
+          <TableSkeleton rows={6} cols={[24, 18, 14, 18, 12]} />
+        ) : loadError ? (
+          <ErrorState title="Unable to load suppliers" onRetry={load} />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<Truck size={26} />}
+            title={
+              search
+                ? "No suppliers match your search"
+                : statusFilter === "INACTIVE"
+                  ? "No inactive suppliers"
+                  : "No suppliers yet"
+            }
+            description={
+              search
+                ? "Try a different search term."
+                : statusFilter === "ACTIVE"
+                  ? "Add your first distributor to link batches and resupplies."
+                  : undefined
+            }
+          />
+        ) : (
+          <>
+            {/* Desktop / tablet table */}
+            <div className="table-scroll-wrap hide-mobile-table">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th>Supplier</th>
+                    <th>Contact Person</th>
+                    <th>Phone</th>
+                    <th>Email</th>
+                    <th>Batches</th>
+                    <th>Status</th>
+                    <th style={{ textAlign: "right" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((s) => (
+                    <tr key={s.supplier_id}>
+                      <td><strong className="td-strong">{s.name}</strong></td>
+                      <td>{s.contact_person || "—"}</td>
+                      <td>{s.phone || "—"}</td>
+                      <td className="cell-truncate">{s.email || "—"}</td>
+                      <td>{s.total_batches ?? 0}</td>
+                      <td><StatusBadge status={s.status} /></td>
+                      <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                        <button onClick={() => openEdit(s)} className="tbl-action-btn edit">
+                          <Edit size={13} /> Edit
+                        </button>
+                        <button
+                          onClick={() => setConfirmTarget(s)}
+                          className={`tbl-action-btn ${s.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                        >
+                          {s.status === "ACTIVE"
+                            ? (<><UserX size={13} /> Deactivate</>)
+                            : (<><UserCheck size={13} /> Activate</>)}
+                        </button>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
             </div>
-          ))}
-        {!loading && filtered.length === 0 && (
-          <p
-            style={{
-              color: "#94a3b8",
-              gridColumn: "1/-1",
-              textAlign: "center",
-              padding: "2rem",
-            }}
-          >
-            No suppliers found.
-          </p>
+
+            {/* Mobile cards */}
+            <div className="show-mobile-table" style={{ padding: "0.6rem" }}>
+              {filtered.map((s) => (
+                <div key={s.supplier_id} className="supplier-card" style={{ marginBottom: "0.6rem" }}>
+                  <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: "0.5rem" }}>
+                    <strong style={{ color: "var(--text-main)" }}>{s.name}</strong>
+                    <StatusBadge status={s.status} />
+                  </div>
+                  <div style={{ marginTop: "0.55rem", fontSize: "0.82rem", color: "var(--text-muted)", lineHeight: 1.7 }}>
+                    {s.contact_person && <div>Contact · {s.contact_person}</div>}
+                    {s.phone && <div>Phone · {s.phone}</div>}
+                    {s.email && <div className="cell-truncate">Email · {s.email}</div>}
+                    <div>{s.total_batches ?? 0} batches</div>
+                  </div>
+                  <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.75rem", flexWrap: "wrap" }}>
+                    <button onClick={() => openEdit(s)} className="tbl-action-btn edit">
+                      <Edit size={13} /> Edit
+                    </button>
+                    <button
+                      onClick={() => setConfirmTarget(s)}
+                      className={`tbl-action-btn ${s.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                    >
+                      {s.status === "ACTIVE"
+                        ? (<><UserX size={13} /> Deactivate</>)
+                        : (<><UserCheck size={13} /> Activate</>)}
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            <div className="table-footer">
+              <span>{filtered.length} supplier{filtered.length === 1 ? "" : "s"}</span>
+            </div>
+          </>
         )}
       </div>
 
+      {/* Add / Edit modal — close-protected while saving */}
       {showModal && (
-        <div className="modal-overlay">
-          <div className="modal-card" style={{ maxWidth: "500px" }}>
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) closeModal(); }}>
+          <div className="modal-card" style={{ maxWidth: "500px" }} role="dialog" aria-modal="true">
             <div className="modal-header">
-              <h3>{editSup ? "Edit Supplier" : "Add Supplier"}</h3>
-              <button
-                onClick={() => setShowModal(false)}
-                style={{
-                  background: "none",
-                  border: "none",
-                  fontSize: "1.5rem",
-                  cursor: "pointer",
-                  color: "#64748b",
-                }}
-              >
-                ×
-              </button>
+              <h2>{editSup ? "Edit Supplier" : "Add Supplier"}</h2>
+              <button type="button" className="modal-close-btn" onClick={closeModal} disabled={saving} aria-label="Close">×</button>
             </div>
             <form onSubmit={handleSubmit}>
-              <div className="form-grid">
-                <div className="form-group full-width">
-                  <label>Company Name *</label>
-                  <input
-                    required
-                    className="form-control"
-                    value={form.name}
-                    onChange={(e) => setForm({ ...form, name: e.target.value })}
-                  />
+              <fieldset disabled={saving} style={{ border: "none", margin: 0, padding: 0 }}>
+                <div className="form-grid">
+                  <div className="form-group full-width">
+                    <label>Company Name *</label>
+                    <input
+                      required
+                      maxLength={150}
+                      className="form-control"
+                      value={form.name}
+                      onChange={(e) => setForm({ ...form, name: e.target.value })}
+                      placeholder="e.g. ABC Pharmaceuticals"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Contact Person</label>
+                    <input
+                      className="form-control"
+                      value={form.contact_person}
+                      onChange={(e) => setForm({ ...form, contact_person: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label>Phone</label>
+                    <input
+                      className="form-control"
+                      value={form.phone}
+                      onChange={(e) => setForm({ ...form, phone: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group full-width">
+                    <label>Email</label>
+                    <input
+                      type="email"
+                      className="form-control"
+                      value={form.email}
+                      onChange={(e) => setForm({ ...form, email: e.target.value })}
+                    />
+                  </div>
+                  <div className="form-group full-width">
+                    <label>Address</label>
+                    <textarea
+                      rows="2"
+                      className="form-control"
+                      value={form.address}
+                      onChange={(e) => setForm({ ...form, address: e.target.value })}
+                    />
+                  </div>
                 </div>
-                <div className="form-group">
-                  <label>Contact Person</label>
-                  <input
-                    className="form-control"
-                    value={form.contact_person}
-                    onChange={(e) =>
-                      setForm({ ...form, contact_person: e.target.value })
-                    }
-                  />
+              </fieldset>
+
+              {formError && (
+                <div className="auth-alert auth-alert--error" role="alert" style={{ marginTop: "1rem" }}>
+                  <strong>Unable to save</strong>
+                  <span>{formError}</span>
                 </div>
-                <div className="form-group">
-                  <label>Phone</label>
-                  <input
-                    className="form-control"
-                    value={form.phone}
-                    onChange={(e) =>
-                      setForm({ ...form, phone: e.target.value })
-                    }
-                  />
-                </div>
-                <div className="form-group">
-                  <label>Email</label>
-                  <input
-                    type="email"
-                    className="form-control"
-                    value={form.email}
-                    onChange={(e) =>
-                      setForm({ ...form, email: e.target.value })
-                    }
-                  />
-                </div>
-                <div className="form-group full-width">
-                  <label>Address</label>
-                  <textarea
-                    rows="2"
-                    className="form-control"
-                    value={form.address}
-                    onChange={(e) =>
-                      setForm({ ...form, address: e.target.value })
-                    }
-                  />
-                </div>
-              </div>
-              <div
-                style={{
-                  display: "flex",
-                  gap: "1rem",
-                  justifyContent: "flex-end",
-                  marginTop: "1.5rem",
-                }}
-              >
-                <button
-                  type="button"
-                  onClick={() => setShowModal(false)}
-                  className="btn-cancel"
-                >
+              )}
+
+              <div className="form-actions">
+                <button type="button" onClick={closeModal} className="btn-cancel" disabled={saving}>
                   Cancel
                 </button>
-                <button type="submit" className="btn-save">
-                  <Check size={15} /> Save
+                <button type="submit" className="btn-save" disabled={saving} aria-busy={saving}>
+                  {saving ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
+                  {saving
+                    ? (editSup ? "Saving Changes…" : "Saving Supplier…")
+                    : (editSup ? "Save Changes" : "Add Supplier")}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      {/* Activate / Deactivate confirmation */}
+      <ConfirmDialog
+        open={Boolean(confirmTarget)}
+        danger={confirmTarget?.status === "ACTIVE"}
+        loading={confirmLoading}
+        title={confirmTarget?.status === "ACTIVE" ? "Deactivate Supplier?" : "Activate Supplier?"}
+        message={
+          confirmTarget?.status === "ACTIVE"
+            ? `"${confirmTarget?.name}" will no longer appear in resupply and batch selection lists. Existing batches and purchase history remain unchanged.`
+            : `"${confirmTarget?.name}" will become available in supplier selection lists again.`
+        }
+        confirmLabel={confirmTarget?.status === "ACTIVE" ? "Deactivate" : "Activate"}
+        onConfirm={confirmStatusChange}
+        onCancel={() => !confirmLoading && setConfirmTarget(null)}
+      />
     </div>
   );
 };
 
 // ─── CATEGORIES PANEL ─────────────────────────────────────────────────────────
+const EMPTY_CATEGORY = { name: "", description: "" };
+
+/*
+ * CATEGORY & SUBCATEGORY MANAGEMENT — admin-only, soft deactivation.
+ * Deactivating keeps every medicine/batch relationship intact; the record
+ * simply leaves operational dropdowns (server enforces this via /active).
+ */
 const CategoriesPanel = () => {
-  const { toast, withLoading } = useToast();
+  const { toast } = useToast();
   const [categories, setCategories] = useState([]);
-  const [loading, setLoading] = useState(false);
-  const [newCatName, setNewCatName] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState(false);
+  const [search, setSearch] = useState("");
+  const [statusFilter, setStatusFilter] = useState("ACTIVE");
   const [expanded, setExpanded] = useState({});
-  const [subForms, setSubForms] = useState({}); // { cat_id: name }
+
+  // Category add/edit modal
+  const [catModal, setCatModal] = useState(null); // { mode: 'add'|'edit', id?, form }
+  const [savingCategory, setSavingCategory] = useState(false);
+  const [categoryError, setCategoryError] = useState("");
+
+  // Subcategory add (inline) / edit modal
+  const [subForms, setSubForms] = useState({});
+  const [addingSubFor, setAddingSubFor] = useState(null); // category_id being saved
+  const [subModal, setSubModal] = useState(null);         // { id, name }
+  const [savingSub, setSavingSub] = useState(false);
+  const [subError, setSubError] = useState("");
+
+  // Status confirmation { type: 'category'|'subcategory', id, name, status }
+  const [confirmTarget, setConfirmTarget] = useState(null);
+  const [confirmLoading, setConfirmLoading] = useState(false);
 
   const load = () => {
     setLoading(true);
+    setLoadError(false);
     categoriesAPI
       .getAll()
       .then((r) => {
-        setCategories(r.data);
+        setCategories(Array.isArray(r.data) ? r.data : []);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => {
+        setLoadError(true);
+        setLoading(false);
+      });
   };
   useEffect(() => {
     load();
   }, []);
 
-  const addCategory = async () => {
-    if (!newCatName.trim()) return;
+  const counts = {
+    ACTIVE: categories.filter((c) => c.status === "ACTIVE").length,
+    INACTIVE: categories.filter((c) => c.status === "INACTIVE").length,
+    ALL: categories.length,
+  };
+
+  const filtered = categories
+    .filter((c) => statusFilter === "ALL" || c.status === statusFilter)
+    .filter((c) => {
+      const q = search.trim().toLowerCase();
+      if (!q) return true;
+      return (
+        c.name?.toLowerCase().includes(q) ||
+        c.sub_categories?.some((s) => s.name?.toLowerCase().includes(q))
+      );
+    });
+
+  /* ── Category create / edit ── */
+  const openAddCategory = () => {
+    setCategoryError("");
+    setCatModal({ mode: "add", form: { ...EMPTY_CATEGORY } });
+  };
+
+  const openEditCategory = (cat) => {
+    setCategoryError("");
+    setCatModal({
+      mode: "edit",
+      id: cat.category_id,
+      originalName: cat.name,
+      form: { name: cat.name || "", description: cat.description || "" },
+    });
+  };
+
+  const closeCategoryModal = () => {
+    if (savingCategory) return; // close protection while saving
+    setCatModal(null);
+    setCategoryError("");
+  };
+
+  const submitCategory = async (e) => {
+    e.preventDefault();
+    if (savingCategory || !catModal) return;
+
+    const name = catModal.form.name.replace(/\s+/g, " ").trim();
+    if (!name) {
+      setCategoryError("Category name is required.");
+      return;
+    }
+
+    setSavingCategory(true);
+    setCategoryError("");
     try {
-      await categoriesAPI.create({ name: newCatName.trim() });
-      setNewCatName("");
+      if (catModal.mode === "add") {
+        await categoriesAPI.create({ name });
+        toast.success("Category added successfully");
+      } else {
+        await categoriesAPI.update(catModal.id, { name });
+        toast.success("Category updated successfully");
+      }
+      setCatModal(null);
       load();
     } catch (err) {
-      toast.error(err.response?.data?.error || "Failed");
+      setCategoryError(err.response?.data?.error || "Unable to save the category. Please try again.");
+    } finally {
+      setSavingCategory(false);
     }
   };
 
-  const toggleCat = async (cat) => {
+  /* ── Subcategory create / edit ── */
+  const submitInlineSub = async (categoryId) => {
+    if (addingSubFor) return; // duplicate guard
+    const raw = (subForms[categoryId] || "").replace(/\s+/g, " ").trim();
+    if (!raw) return;
+    setAddingSubFor(categoryId);
     try {
-      await categoriesAPI.update(cat.category_id, {
-        status: cat.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
-      });
-      load();
-    } catch {
-      toast.error("Operation failed");
-    }
-  };
-
-  const addSubcat = async (catId) => {
-    const name = subForms[catId]?.trim();
-    if (!name) return;
-    try {
-      await categoriesAPI.addSubcategory(catId, { name });
-      setSubForms((p) => ({ ...p, [catId]: "" }));
+      await categoriesAPI.addSubcategory(categoryId, { name: raw });
+      toast.success("Subcategory added successfully");
+      setSubForms((p) => ({ ...p, [categoryId]: "" }));
       load();
     } catch (err) {
-      toast.error(err.response?.data?.error || "Failed");
+      toast.error(err.response?.data?.error || "Unable to add the subcategory. Please try again.");
+    } finally {
+      setAddingSubFor(null);
     }
   };
 
-  const toggleSubcat = async (sub) => {
+  const openEditSub = (sub) => {
+    setSubError("");
+    setSubModal({ id: sub.sub_category_id, name: sub.name });
+  };
+
+  const submitSubEdit = async (e) => {
+    e.preventDefault();
+    if (savingSub || !subModal) return;
+    const name = subModal.name.replace(/\s+/g, " ").trim();
+    if (!name) {
+      setSubError("Subcategory name is required.");
+      return;
+    }
+    setSavingSub(true);
+    setSubError("");
     try {
-      await categoriesAPI.updateSubcategory(sub.sub_category_id, {
-        status: sub.status === "ACTIVE" ? "INACTIVE" : "ACTIVE",
-      });
+      await categoriesAPI.updateSubcategory(subModal.id, { name });
+      toast.success("Subcategory updated successfully");
+      setSubModal(null);
       load();
-    } catch {
-      toast.error("Operation failed");
+    } catch (err) {
+      setSubError(err.response?.data?.error || "Unable to save the subcategory. Please try again.");
+    } finally {
+      setSavingSub(false);
     }
   };
+
+  /* ── Status changes with confirmation + loading ── */
+  const confirmStatusChange = async () => {
+    if (!confirmTarget || confirmLoading) return;
+    const nextStatus = confirmTarget.status === "ACTIVE" ? "INACTIVE" : "ACTIVE";
+    setConfirmLoading(true);
+    try {
+      if (confirmTarget.type === "category") {
+        await categoriesAPI.changeStatus(confirmTarget.id, nextStatus);
+      } else {
+        await categoriesAPI.changeSubcategoryStatus(confirmTarget.id, nextStatus);
+      }
+      toast.success(
+        `${confirmTarget.type === "category" ? "Category" : "Subcategory"} ${nextStatus === "ACTIVE" ? "activated" : "deactivated"}`
+      );
+      setConfirmTarget(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Unable to update the status. Please try again.");
+    } finally {
+      setConfirmLoading(false);
+    }
+  };
+
+  const askToggleCategory = (cat) =>
+    setConfirmTarget({ type: "category", id: cat.category_id, name: cat.name, status: cat.status });
+
+  const askToggleSub = (sub) =>
+    setConfirmTarget({ type: "subcategory", id: sub.sub_category_id, name: sub.name, status: sub.status });
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "1.25rem",
-        }}
-      >
-        <h2 className="settings-section-title">Categories & Subcategories</h2>
-      </div>
-      <div style={{ display: "flex", gap: "0.75rem", marginBottom: "1.5rem" }}>
-        <input
-          className="form-control"
-          placeholder="New category name..."
-          value={newCatName}
-          onChange={(e) => setNewCatName(e.target.value)}
-          onKeyDown={(e) => e.key === "Enter" && addCategory()}
-          style={{ flex: 1 }}
-        />
-        <button onClick={addCategory} className="settings-add-btn">
-          <Plus size={15} /> Add
+      <div className="mgmt-header">
+        <div>
+          <h2 className="settings-section-title">Category Management</h2>
+          <p className="form-hint">
+            Medicine classification. Inactive categories disappear from medicine forms but all existing records stay linked.
+          </p>
+        </div>
+        <button onClick={openAddCategory} className="settings-add-btn">
+          <Plus size={15} /> Add Category
         </button>
       </div>
 
-      {loading && <p style={{ color: "#64748b" }}>Loading...</p>}
-      <div style={{ display: "flex", flexDirection: "column", gap: "0.75rem" }}>
-        {categories.map((cat) => (
-          <div key={cat.category_id} className="cat-card">
-            <div
-              className="cat-header"
-              onClick={() =>
-                setExpanded((p) => ({
-                  ...p,
-                  [cat.category_id]: !p[cat.category_id],
-                }))
-              }
-            >
-              <div
-                style={{
-                  display: "flex",
-                  alignItems: "center",
-                  gap: "0.75rem",
-                }}
-              >
-                <span className="cat-arrow">
-                  {expanded[cat.category_id] ? "▼" : "▶"}
-                </span>
-                <strong style={{ color: "#0f172a" }}>{cat.name}</strong>
-                <span className="badge badge-secondary">
-                  {cat.sub_categories?.length || 0} sub
-                </span>
-                <span
-                  className={`badge ${cat.status === "ACTIVE" ? "badge-success" : "badge-danger"}`}
-                >
-                  {cat.status}
-                </span>
-              </div>
-              <button
-                onClick={(e) => {
-                  e.stopPropagation();
-                  toggleCat(cat);
-                }}
-                className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                style={{ fontSize: "0.75rem" }}
-              >
-                {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
-              </button>
+      <div className="mgmt-toolbar">
+        <div className="settings-search" style={{ marginBottom: 0 }}>
+          <Search size={15} />
+          <input
+            type="text"
+            placeholder="Search categories…"
+            value={search}
+            onChange={(e) => setSearch(e.target.value)}
+            aria-label="Search categories"
+          />
+        </div>
+        <FilterTabs value={statusFilter} onChange={setStatusFilter} counts={counts} />
+      </div>
+
+      <div className="table-container">
+        {loading ? (
+          <TableSkeleton rows={6} cols={[30, 14, 12, 16, 12]} />
+        ) : loadError ? (
+          <ErrorState title="Unable to load categories" onRetry={load} />
+        ) : filtered.length === 0 ? (
+          <EmptyState
+            icon={<Tag size={26} />}
+            title={
+              search
+                ? "No categories match your search"
+                : statusFilter === "INACTIVE"
+                  ? "No inactive categories"
+                  : "No categories yet"
+            }
+            description={
+              search
+                ? "Try a different search term."
+                : statusFilter === "ACTIVE"
+                  ? "Create your first category to organize medicines."
+                  : undefined
+            }
+          />
+        ) : (
+          <>
+            {/* Desktop / tablet table */}
+            <div className="table-scroll-wrap hide-mobile-table">
+              <table className="custom-table">
+                <thead>
+                  <tr>
+                    <th style={{ minWidth: 220 }}>Category</th>
+                    <th>Subcategories</th>
+                    <th>Medicines</th>
+                    <th>Status</th>
+                    <th style={{ textAlign: "right" }}>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {filtered.map((cat) => (
+                    <React.Fragment key={cat.category_id}>
+                      <tr>
+                        <td>
+                          <span style={{ display: "inline-flex", alignItems: "center", gap: "0.45rem" }}>
+                            <button
+                              type="button"
+                              className="icon-btn"
+                              style={{ width: 26, height: 26, borderRadius: 7 }}
+                              aria-label={expanded[cat.category_id] ? "Hide subcategories" : "Show subcategories"}
+                              aria-expanded={Boolean(expanded[cat.category_id])}
+                              onClick={() =>
+                                setExpanded((p) => ({ ...p, [cat.category_id]: !p[cat.category_id] }))
+                              }
+                            >
+                              {expanded[cat.category_id]
+                                ? <ChevronDown size={13} />
+                                : <ChevronRight size={13} />}
+                            </button>
+                            <strong className="td-strong">{cat.name}</strong>
+                          </span>
+                        </td>
+                        <td>{cat.sub_count ?? cat.sub_categories?.length ?? 0}</td>
+                        <td>{cat.medicine_count ?? 0}</td>
+                        <td><StatusBadge status={cat.status} /></td>
+                        <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
+                          <button onClick={() => openEditCategory(cat)} className="tbl-action-btn edit">
+                            <Edit size={13} /> Edit
+                          </button>
+                          <button
+                            onClick={() => askToggleCategory(cat)}
+                            className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                          >
+                            {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                          </button>
+                        </td>
+                      </tr>
+
+                      {/* Inline subcategory management */}
+                      {expanded[cat.category_id] && (
+                        <tr>
+                          <td colSpan="5" style={{ background: "var(--surface-alt)", padding: "0.9rem 1rem 1rem 3.1rem" }}>
+                            {(cat.sub_categories?.length || 0) === 0 && (
+                              <p className="form-hint" style={{ marginBottom: "0.6rem" }}>No subcategories yet.</p>
+                            )}
+                            {cat.sub_categories?.map((sub) => (
+                              <div key={sub.sub_category_id} className="subcat-row">
+                                <span>└ <strong style={{ color: "var(--text-main)" }}>{sub.name}</strong>{" "}
+                                  <small className="form-hint">· {sub.medicine_count ?? 0} medicines</small>
+                                </span>
+                                <span style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
+                                  <StatusBadge status={sub.status} />
+                                  <button onClick={() => openEditSub(sub)} className="tbl-action-btn edit" style={{ fontSize: "0.72rem" }}>
+                                    Edit
+                                  </button>
+                                  <button
+                                    onClick={() => askToggleSub(sub)}
+                                    className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                                    style={{ fontSize: "0.72rem" }}
+                                  >
+                                    {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                                  </button>
+                                </span>
+                              </div>
+                            ))}
+
+                            {cat.status === "ACTIVE" ? (
+                              <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.6rem", maxWidth: 420 }}>
+                                <input
+                                  className="form-control"
+                                  placeholder="New subcategory name…"
+                                  style={{ padding: "0.42rem 0.75rem", fontSize: "0.85rem" }}
+                                  value={subForms[cat.category_id] || ""}
+                                  onChange={(e) => setSubForms((p) => ({ ...p, [cat.category_id]: e.target.value }))}
+                                  onKeyDown={(e) => e.key === "Enter" && submitInlineSub(cat.category_id)}
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => submitInlineSub(cat.category_id)}
+                                  className="settings-add-btn"
+                                  disabled={addingSubFor !== null}
+                                  aria-busy={addingSubFor === cat.category_id}
+                                >
+                                  {addingSubFor === cat.category_id
+                                    ? <Loader2 size={13} className="spin" />
+                                    : <Plus size={13} />}
+                                  {addingSubFor === cat.category_id ? "Adding…" : "Add"}
+                                </button>
+                              </div>
+                            ) : (
+                              <p className="form-hint" style={{ marginTop: "0.5rem" }}>
+                                Activate this category before adding new subcategories.
+                              </p>
+                            )}
+                          </td>
+                        </tr>
+                      )}
+                    </React.Fragment>
+                  ))}
+                </tbody>
+              </table>
             </div>
 
-            {expanded[cat.category_id] && (
-              <div className="cat-body">
-                {cat.sub_categories?.map((sub) => (
-                  <div key={sub.sub_category_id} className="subcat-row">
-                    <span>└ {sub.name}</span>
-                    <div
-                      style={{
-                        display: "flex",
-                        gap: "0.35rem",
-                        alignItems: "center",
-                      }}
-                    >
-                      <span
-                        className={`badge ${sub.status === "ACTIVE" ? "badge-success" : "badge-danger"}`}
-                      >
-                        {sub.status}
-                      </span>
-                      <button
-                        onClick={() => toggleSubcat(sub)}
-                        className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                        style={{ fontSize: "0.72rem" }}
-                      >
-                        {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                      </button>
-                    </div>
+            {/* Mobile cards */}
+            <div className="show-mobile-table" style={{ padding: "0.6rem" }}>
+              {filtered.map((cat) => (
+                <div key={cat.category_id} className="mobile-card">
+                  <div style={{ display: "flex", justifyContent: "space-between", gap: "0.5rem", alignItems: "flex-start" }}>
+                    <strong style={{ color: "var(--text-main)" }}>{cat.name}</strong>
+                    <StatusBadge status={cat.status} />
                   </div>
-                ))}
-                <div
-                  style={{
-                    display: "flex",
-                    gap: "0.5rem",
-                    marginTop: "0.5rem",
-                  }}
-                >
-                  <input
-                    className="form-control"
-                    placeholder="Add subcategory..."
-                    style={{
-                      flex: 1,
-                      padding: "0.4rem 0.75rem",
-                      fontSize: "0.85rem",
-                    }}
-                    value={subForms[cat.category_id] || ""}
-                    onChange={(e) =>
-                      setSubForms((p) => ({
-                        ...p,
-                        [cat.category_id]: e.target.value,
-                      }))
-                    }
-                    onKeyDown={(e) =>
-                      e.key === "Enter" && addSubcat(cat.category_id)
-                    }
-                  />
-                  <button
-                    onClick={() => addSubcat(cat.category_id)}
-                    className="settings-add-btn"
-                    style={{ fontSize: "0.8rem", padding: "0.4rem 0.8rem" }}
-                  >
-                    + Add
-                  </button>
+                  <div style={{ marginTop: "0.4rem", fontSize: "0.8rem", color: "var(--text-muted)" }}>
+                    {cat.sub_count ?? 0} subcategories · {cat.medicine_count ?? 0} medicines
+                  </div>
+                  <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
+                    <button onClick={() => openEditCategory(cat)} className="tbl-action-btn edit">Edit</button>
+                    <button
+                      onClick={() => askToggleCategory(cat)}
+                      className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                    >
+                      {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                    </button>
+                    <button
+                      type="button"
+                      className="tbl-action-btn reset"
+                      onClick={() => setExpanded((p) => ({ ...p, [cat.category_id]: !p[cat.category_id] }))}
+                    >
+                      {expanded[cat.category_id] ? "Hide subs" : `Subs (${cat.sub_categories?.length || 0})`}
+                    </button>
+                  </div>
+
+                  {expanded[cat.category_id] && (
+                    <div style={{ marginTop: "0.7rem", borderTop: "1px dashed var(--border)", paddingTop: "0.7rem" }}>
+                      {cat.sub_categories?.map((sub) => (
+                        <div key={sub.sub_category_id} className="subcat-row" style={{ flexDirection: "column", alignItems: "flex-start", gap: "0.3rem" }}>
+                          <span style={{ display: "flex", justifyContent: "space-between", width: "100%" }}>
+                            <strong style={{ color: "var(--text-main)", fontWeight: 600 }}>└ {sub.name}</strong>
+                            <StatusBadge status={sub.status} />
+                          </span>
+                          <span style={{ display: "flex", gap: "0.35rem" }}>
+                            <button onClick={() => openEditSub(sub)} className="tbl-action-btn edit" style={{ fontSize: "0.7rem" }}>Edit</button>
+                            <button
+                              onClick={() => askToggleSub(sub)}
+                              className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                              style={{ fontSize: "0.7rem" }}
+                            >
+                              {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                            </button>
+                          </span>
+                        </div>
+                      ))}
+                      {cat.status === "ACTIVE" && (
+                        <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.6rem" }}>
+                          <input
+                            className="form-control"
+                            placeholder="New subcategory…"
+                            style={{ padding: "0.42rem 0.75rem", fontSize: "0.82rem" }}
+                            value={subForms[cat.category_id] || ""}
+                            onChange={(e) => setSubForms((p) => ({ ...p, [cat.category_id]: e.target.value }))}
+                            onKeyDown={(e) => e.key === "Enter" && submitInlineSub(cat.category_id)}
+                          />
+                          <button
+                            type="button"
+                            onClick={() => submitInlineSub(cat.category_id)}
+                            className="settings-add-btn"
+                            disabled={addingSubFor !== null}
+                          >
+                            {addingSubFor === cat.category_id ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
-              </div>
-            )}
-          </div>
-        ))}
-        {!loading && categories.length === 0 && (
-          <p style={{ color: "#94a3b8", textAlign: "center" }}>
-            No categories yet. Add one above.
-          </p>
+              ))}
+            </div>
+
+            <div className="table-footer">
+              <span>{filtered.length} categor{filtered.length === 1 ? "y" : "ies"}</span>
+            </div>
+          </>
         )}
       </div>
+
+      {/* Category Add / Edit modal */}
+      {catModal && (
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget) closeCategoryModal(); }}>
+          <div className="modal-card" style={{ maxWidth: "430px" }} role="dialog" aria-modal="true">
+            <div className="modal-header">
+              <h2>{catModal.mode === "add" ? "Add Category" : "Edit Category"}</h2>
+              <button type="button" className="modal-close-btn" onClick={closeCategoryModal} disabled={savingCategory} aria-label="Close">×</button>
+            </div>
+            <form onSubmit={submitCategory}>
+              <fieldset disabled={savingCategory} style={{ border: "none", margin: 0, padding: 0 }}>
+                <div className="form-group full-width">
+                  <label>Category Name *</label>
+                  <input
+                    required
+                    maxLength={100}
+                    autoFocus
+                    className="form-control"
+                    placeholder="e.g. Antibiotics"
+                    value={catModal.form.name}
+                    onChange={(e) => setCatModal({ ...catModal, form: { ...catModal.form, name: e.target.value } })}
+                  />
+                </div>
+                <div className="form-group full-width" style={{ marginTop: "0.9rem" }}>
+                  <label>Description</label>
+                  <textarea
+                    rows="2"
+                    maxLength={300}
+                    className="form-control"
+                    placeholder="Optional short description…"
+                    value={catModal.form.description}
+                    onChange={(e) => setCatModal({ ...catModal, form: { ...catModal.form, description: e.target.value } })}
+                  />
+                </div>
+                <div style={{ marginTop: "0.9rem" }}>
+                  <span className="form-hint">
+                    Status:{" "}
+                    <StatusBadge status={catModal.mode === "add" ? "ACTIVE" : undefined} />
+                    {catModal.mode === "add" && " (new categories start active)"}
+                  </span>
+                  {catModal.mode === "edit" && (
+                    <p className="form-hint" style={{ marginTop: "0.35rem" }}>
+                      Use Activate / Deactivate in the list to change status safely — history is preserved either way.
+                    </p>
+                  )}
+                </div>
+              </fieldset>
+
+              {categoryError && (
+                <div className="auth-alert auth-alert--error" role="alert" style={{ marginTop: "1rem" }}>
+                  <strong>Unable to save</strong>
+                  <span>{categoryError}</span>
+                </div>
+              )}
+
+              <div className="form-actions">
+                <button type="button" className="btn-cancel" onClick={closeCategoryModal} disabled={savingCategory}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn-save" disabled={savingCategory} aria-busy={savingCategory}>
+                  {savingCategory ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
+                  {savingCategory
+                    ? (catModal.mode === "add" ? "Adding Category…" : "Saving Changes…")
+                    : (catModal.mode === "add" ? "Add Category" : "Save Changes")}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Subcategory Edit modal */}
+      {subModal && (
+        <div className="modal-overlay" onMouseDown={(e) => { if (e.target === e.currentTarget && !savingSub) setSubModal(null); }}>
+          <div className="modal-card" style={{ maxWidth: "400px" }} role="dialog" aria-modal="true">
+            <div className="modal-header">
+              <h2>Edit Subcategory</h2>
+              <button type="button" className="modal-close-btn" onClick={() => !savingSub && setSubModal(null)} disabled={savingSub} aria-label="Close">×</button>
+            </div>
+            <form onSubmit={submitSubEdit}>
+              <fieldset disabled={savingSub} style={{ border: "none", margin: 0, padding: 0 }}>
+                <div className="form-group full-width">
+                  <label>Subcategory Name *</label>
+                  <input
+                    required
+                    maxLength={100}
+                    autoFocus
+                    className="form-control"
+                    value={subModal.name}
+                    onChange={(e) => setSubModal({ ...subModal, name: e.target.value })}
+                  />
+                </div>
+              </fieldset>
+              {subError && (
+                <div className="auth-alert auth-alert--error" role="alert" style={{ marginTop: "1rem" }}>
+                  <strong>Unable to save</strong>
+                  <span>{subError}</span>
+                </div>
+              )}
+              <div className="form-actions">
+                <button type="button" className="btn-cancel" onClick={() => setSubModal(null)} disabled={savingSub}>
+                  Cancel
+                </button>
+                <button type="submit" className="btn-save" disabled={savingSub} aria-busy={savingSub}>
+                  {savingSub ? <Loader2 size={15} className="spin" /> : <Check size={15} />}
+                  {savingSub ? "Saving Changes…" : "Save Changes"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
+
+      {/* Activate / Deactivate confirmations */}
+      <ConfirmDialog
+        open={Boolean(confirmTarget)}
+        danger={confirmTarget?.status === "ACTIVE"}
+        loading={confirmLoading}
+        title={
+          confirmTarget?.status === "ACTIVE"
+            ? `Deactivate ${confirmTarget?.type === "category" ? "Category" : "Subcategory"}?`
+            : `Activate ${confirmTarget?.type === "category" ? "Category" : "Subcategory"}?`
+        }
+        message={
+          confirmTarget?.status === "ACTIVE"
+            ? `"${confirmTarget?.name}" will no longer appear in active medicine forms and selection lists. Existing medicine records using it remain unchanged.`
+            : `"${confirmTarget?.name}" will become available in active forms and selection lists again.`
+        }
+        confirmLabel={confirmTarget?.status === "ACTIVE" ? "Deactivate" : "Activate"}
+        onConfirm={confirmStatusChange}
+        onCancel={() => !confirmLoading && setConfirmTarget(null)}
+      />
     </div>
   );
 };
@@ -1009,7 +1465,7 @@ const PricingPanel = () => {
         Pricing & Tax Configuration
       </h2>
       {loading ? (
-        <p style={{ color: "#64748b" }}>Loading...</p>
+        <p style={{ color: "var(--text-muted)" }}>Loading...</p>
       ) : (
         <div
           style={{ display: "flex", flexDirection: "column", gap: "1.25rem" }}
@@ -1031,7 +1487,7 @@ const PricingPanel = () => {
             <p
               style={{
                 fontSize: "0.8rem",
-                color: "#64748b",
+                color: "var(--text-muted)",
                 margin: "0 0 0.5rem",
               }}
             >
@@ -1052,7 +1508,7 @@ const PricingPanel = () => {
                   setForm({ ...form, default_profit_margin: e.target.value })
                 }
               />
-              <span style={{ color: "#64748b", fontWeight: 700 }}>%</span>
+              <span style={{ color: "var(--text-muted)", fontWeight: 700 }}>%</span>
             </div>
           </div>
           <div className="pricing-field">
@@ -1106,8 +1562,8 @@ const PricingPanel = () => {
               alignItems: "center",
               gap: "6px",
               padding: "0.7rem 1.5rem",
-              background: saved ? "#10b981" : "#2563eb",
-              color: "white",
+              background: saved ? "var(--success)" : "var(--primary)",
+              color: saved ? "#ffffff" : "var(--primary-text)",
               border: "none",
               borderRadius: "8px",
               cursor: "pointer",
@@ -1135,120 +1591,136 @@ const PricingPanel = () => {
 const AuditPanel = () => {
   const [logs, setLogs] = useState([]);
   const [loading, setLoading] = useState(false);
+  const [loadError, setLoadError] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0, totalPages: 0 });
+  const [dateFrom, setDateFrom] = useState("");
+  const [dateTo, setDateTo] = useState("");
 
-  useEffect(() => {
+  const load = (pageNum = page) => {
     setLoading(true);
-    // fetch audit logs
+    setLoadError(false);
     import("../services/api").then(({ default: api }) => {
       api
-        .get("/audit-logs")
+        .get("/audit-logs", { params: {
+          page: pageNum,
+          limit: 50,
+          ...(dateFrom && { from: dateFrom }),
+          ...(dateTo && { to: dateTo }),
+        } })
         .then((r) => {
-          setLogs(r.data);
+          const body = r.data || {};
+          // Structured response: { success, data, pagination }
+          setLogs(Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : []);
+          if (body.pagination) setPagination(body.pagination);
           setLoading(false);
         })
-        .catch(() => setLoading(false));
+        .catch(() => {
+          setLogs([]);
+          setLoading(false);
+          setLoadError(true);
+        });
     });
-  }, []);
+  };
+
+  useEffect(() => {
+    load(page);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [page]);
 
   return (
     <div>
-      <div
-        style={{
-          display: "flex",
-          justifyContent: "space-between",
-          alignItems: "center",
-          marginBottom: "1.25rem",
-        }}
-      >
+      <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.6rem", marginBottom: "1rem" }}>
         <h2 className="settings-section-title">Audit Logs</h2>
-        <span
-          style={{ fontSize: "0.8rem", color: "#94a3b8", fontStyle: "italic" }}
-        >
-          Read-only — cannot edit or delete
-        </span>
+        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
+          <input type="date" className="form-control" style={{ maxWidth: 150 }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="From date" />
+          <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>to</span>
+          <input type="date" className="form-control" style={{ maxWidth: 150 }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="To date" />
+          <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setPage(1); load(1); }}>
+            Apply
+          </button>
+          <span style={{ fontSize: "0.76rem", color: "var(--text-faint)" }}>
+            Read-only · {pagination.total} record{pagination.total === 1 ? "" : "s"}
+          </span>
+        </div>
       </div>
-      <div style={{ overflowX: "auto" }}>
-        <table className="custom-table">
-          <thead>
-            <tr>
-              <th>When</th>
-              <th>User</th>
-              <th>Action</th>
-              <th>Table</th>
-              <th>Record ID</th>
-              <th>Before</th>
-              <th>After</th>
-            </tr>
-          </thead>
-          <tbody>
-            {loading && (
+
+      <div className="table-container">
+        <div className="table-scroll-wrap">
+          <table className="custom-table">
+            <thead>
               <tr>
-                <td
-                  colSpan="7"
-                  style={{ textAlign: "center", padding: "2rem" }}
-                >
-                  Loading audit logs...
-                </td>
+                <th>When</th>
+                <th>User</th>
+                <th>Action</th>
+                <th>Module</th>
+                <th>Record</th>
+                <th>Description</th>
+                <th>Status</th>
               </tr>
-            )}
-            {!loading && logs.length === 0 && (
-              <tr>
-                <td
-                  colSpan="7"
-                  style={{
-                    textAlign: "center",
-                    padding: "2rem",
-                    color: "#94a3b8",
-                  }}
-                >
-                  No audit logs recorded yet.
-                </td>
-              </tr>
-            )}
-            {!loading &&
-              logs.map((log) => (
-                <tr key={log.audit_id}>
-                  <td style={{ fontSize: "0.8rem", whiteSpace: "nowrap" }}>
-                    {new Date(log.created_at).toLocaleString()}
-                  </td>
-                  <td>
-                    <strong>{log.user_name || `#${log.user_id}`}</strong>
-                  </td>
-                  <td>
-                    <span className="badge badge-primary">{log.action}</span>
-                  </td>
-                  <td style={{ fontFamily: "monospace", fontSize: "0.78rem" }}>
-                    {log.table_name}
-                  </td>
-                  <td>{log.record_id}</td>
-                  <td
-                    style={{
-                      fontSize: "0.75rem",
-                      maxWidth: "150px",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {log.old_values
-                      ? JSON.stringify(log.old_values).substring(0, 50) + "..."
-                      : "—"}
-                  </td>
-                  <td
-                    style={{
-                      fontSize: "0.75rem",
-                      maxWidth: "150px",
-                      overflow: "hidden",
-                      textOverflow: "ellipsis",
-                    }}
-                  >
-                    {log.new_values
-                      ? JSON.stringify(log.new_values).substring(0, 50) + "..."
-                      : "—"}
+            </thead>
+            <tbody>
+              {loading && (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: "center", padding: "2rem", color: "var(--text-faint)" }}>
+                    Loading audit logs…
                   </td>
                 </tr>
-              ))}
-          </tbody>
-        </table>
+              )}
+              {!loading && loadError && (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: "center", padding: "2rem" }}>
+                    Unable to load audit logs.{" "}
+                    <button type="button" className="btn btn-secondary btn-sm" onClick={() => load()}>Try Again</button>
+                  </td>
+                </tr>
+              )}
+              {!loading && !loadError && logs.length === 0 && (
+                <tr>
+                  <td colSpan="7" style={{ textAlign: "center", padding: "2rem", color: "var(--text-faint)" }}>
+                    No audit records for this period yet.
+                  </td>
+                </tr>
+              )}
+              {!loading &&
+                logs.map((log) => (
+                  <tr key={log.id ?? `${log.timestamp}-${log.action}`}>
+                    <td style={{ fontSize: "0.78rem", whiteSpace: "nowrap" }}>
+                      {log.timestamp ? new Date(log.timestamp).toLocaleString() : "—"}
+                    </td>
+                    <td>
+                      <strong>{log.full_name || log.username || (log.user_id ? `#${log.user_id}` : "System")}</strong>
+                    </td>
+                    <td>
+                      <span className="badge badge-primary">{log.action}</span>
+                    </td>
+                    <td style={{ fontFamily: "monospace", fontSize: "0.75rem" }}>{log.module || "—"}</td>
+                    <td style={{ fontSize: "0.78rem" }}>
+                      {[log.entity_type, log.entity_id].filter(Boolean).join(" #") || "—"}
+                    </td>
+                    <td style={{ fontSize: "0.78rem", maxWidth: "280px" }}>
+                      <span className="cell-truncate" style={{ display: "block" }} title={log.description}>
+                        {log.description || "—"}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={`badge ${log.status === "FAILED" ? "badge-danger" : "badge-secondary"}`}>
+                        {log.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+            </tbody>
+          </table>
+        </div>
+
+        <div className="table-footer">
+          <span>Page {pagination.page} of {Math.max(1, pagination.totalPages)}</span>
+          <div className="pagination">
+            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={pagination.page <= 1}>‹ Prev</button>
+            <button onClick={() => setPage((p) => Math.min(pagination.totalPages || 1, p + 1))} disabled={pagination.page >= pagination.totalPages}>Next ›</button>
+          </div>
+        </div>
       </div>
     </div>
   );
