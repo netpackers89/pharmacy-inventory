@@ -4,13 +4,18 @@ const router = express.Router();
 // -------------------------------------------------------------------
 // Gemini API Configuration
 // -------------------------------------------------------------------
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || 'AQ.Ab8RN6KgCz5nh1Ip4Txel3go_SwIcY5gAm3iA6wz51GPJGVG7g';
+// Read exclusively from environment variables to keep credentials safe
+const GEMINI_API_KEY = process.env.GEMINI_API_KEY;
 
 // Using gemini-2.5-flash endpoint
-const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY)}`;
+const GEMINI_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key=${encodeURIComponent(GEMINI_API_KEY || '')}`;
 
 // Helper function for standard API fetch with error handling
 async function fetchGeminiAPI(prompt, isJson = false) {
+  if (!GEMINI_API_KEY) {
+    throw new Error('GEMINI_API_KEY is missing in environment variables');
+  }
+
   const payload = {
     contents: [{ parts: [{ text: prompt }] }]
   };
@@ -164,8 +169,6 @@ router.post('/api/ai/autofill', async (req, res) => {
 // GET /api/sales (Guarded against database ECONNRESET socket drops)
 router.get('/api/sales', async (req, res) => {
   try {
-    // Replace DB call with your actual pool/orm call
-    // const sales = await db.query('SELECT * FROM sales');
     res.json({ success: true, sales: [] });
   } catch (err) {
     console.error('Error fetching sales:', err.message);
