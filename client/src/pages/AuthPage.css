@@ -1,0 +1,9 @@
+/* Auth page styles - centered, responsive forms */
+.auth-wrapper { display:flex; align-items:center; justify-content:center; min-height:70vh; padding:2rem; }
+.auth-card { width:100%; max-width:420px; background:var(--surface); border:1px solid var(--border); padding:1.5rem; border-radius:12px; box-shadow:var(--shadow-sm); }
+.auth-card h2 { margin-bottom:0.75rem; }
+.auth-form .form-group { margin-bottom:0.75rem; }
+.auth-actions { display:flex; gap:0.5rem; margin-top:0.75rem; }
+
+@media (max-width: 420px) { .auth-card { padding:1rem; } }
+

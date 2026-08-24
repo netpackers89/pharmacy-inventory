@@ -1,0 +1,8 @@
+/* Users page styles */
+.users-grid { display:grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap:0.9rem; }
+.user-card { background:var(--surface); border:1px solid var(--border); padding:0.85rem; border-radius:10px; }
+
+@media (max-width: 640px) {
+	.users-grid { grid-template-columns: 1fr; }
+}
+

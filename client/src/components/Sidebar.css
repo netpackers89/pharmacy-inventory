@@ -1,0 +1,33 @@
+/* Sidebar component overrides (keeps styles modular) */
+.sidebar .sidebar-logo-icon {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.sidebar .sidebar-brand-name {
+    font-size: 1.35rem;
+    font-weight: 800;
+}
+
+.sidebar .sidebar-brand-tag {
+    font-size: 0.7rem;
+    color: #94a3b8;
+}
+
+.sidebar-footer {
+    padding: 1.25rem 1.5rem;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+    font-size: 0.75rem;
+    color: #64748b;
+}
+
+.sidebar-footer p {
+    margin: 0;
+}
+
+.sidebar-credit {
+    font-size: 0.7rem;
+    color: #94a3b8;
+    margin-top: 0.2rem;
+}

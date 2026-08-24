@@ -1,0 +1,42 @@
+/* Dashboard page — mobile responsive */
+.dashboard-page {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* Stat cards — 2-col on mobile */
+.dashboard-grid {
+  grid-template-columns: repeat(2, 1fr);
+}
+
+/* Chart + fast-moving panel: stacked on mobile, side-by-side on desktop */
+.dash-main-grid {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1rem;
+}
+
+/* Quick actions: 1-col on mobile */
+.dash-quick-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.75rem;
+}
+
+@media (min-width: 640px) {
+  .dash-quick-actions {
+    grid-template-columns: repeat(3, 1fr);
+  }
+}
+
+@media (min-width: 1024px) {
+  .dashboard-grid {
+    grid-template-columns: repeat(3, 1fr);
+  }
+
+  .dash-main-grid {
+    grid-template-columns: 2fr 1fr;
+    gap: 1.5rem;
+  }
+}

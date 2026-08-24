@@ -1,0 +1,30 @@
+/* Inventory page — mobile responsive */
+
+/* Mobile: show cards, hide desktop table */
+@media (max-width: 767px) {
+  .inv-mobile-cards {
+    display: block;
+  }
+  .inv-desktop-table {
+    display: none;
+  }
+  .inv-summary-grid {
+    grid-template-columns: repeat(2, 1fr) !important;
+  }
+}
+
+/* Desktop: hide cards, show table */
+@media (min-width: 768px) {
+  .inv-mobile-cards {
+    display: none;
+  }
+  .inv-desktop-table {
+    display: block;
+  }
+  .inv-summary-grid {
+    grid-template-columns: repeat(4, 1fr) !important;
+  }
+}
+
+/* Tab bar: hide scrollbar */
+.inv-tab-bar::-webkit-scrollbar { display: none; }

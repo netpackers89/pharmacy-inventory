@@ -1,0 +1,81 @@
+/* Header component styles — mobile-first */
+
+.header {
+  height: 56px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 0.75rem;
+  gap: 0.6rem;
+  position: sticky;
+  top: 0;
+  z-index: 40;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  width: 100%;
+  overflow: hidden;
+}
+
+.sidebar-toggle-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: transparent;
+  border: none;
+  padding: 0.45rem;
+  cursor: pointer;
+  border-radius: 8px;
+  flex-shrink: 0;
+  min-width: 36px;
+  min-height: 36px;
+  transition: background 0.15s;
+}
+.sidebar-toggle-btn:hover { background: var(--surface-alt); }
+
+/* On desktop, sidebar is always visible — no toggle needed */
+@media (min-width: 768px) {
+  .sidebar-toggle-btn { display: none; }
+}
+
+/* User info text — hidden on mobile (user sees it in the sidebar) */
+.user-info {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+.user-info .username { font-size: 0.82rem; font-weight: 800; color: var(--text-main); white-space: nowrap; }
+.user-info .role     { font-size: 0.68rem; color: var(--text-muted); text-transform: capitalize; }
+
+@media (max-width: 767px) {
+  /* Hide user-info text AND avatar on small screens — it's in the sidebar */
+  .user-profile {
+    display: none !important;
+  }
+  /* Also hide logout button — it's in the sidebar footer */
+  .header-logout-btn {
+    display: none !important;
+  }
+}
+
+/* Avatar */
+.user-avatar-big {
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 50%;
+  background: var(--primary);
+  color: #fff;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-weight: 800;
+  font-size: 0.85rem;
+}
+
+/* Search suggestions */
+.search-dropdown-item { display: flex; align-items: center; justify-content: space-between; padding: 0.6rem 0.9rem; }
+.search-dropdown-item .suggestion-left { display: flex; align-items: center; gap: 0.55rem; }
+.search-dropdown-item .brand-name      { font-size: 0.88rem; color: var(--text-main); font-weight: 700; }
+.search-dropdown-item .generic-info    { font-size: 0.75rem; color: var(--text-muted); display: block; }
+.search-dropdown-item .suggestion-right { text-align: right; }
+.search-dropdown-item .stock-info      { font-size: 0.72rem; color: var(--text-muted); display: block; margin-top: 2px; }

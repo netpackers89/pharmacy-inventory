@@ -1,0 +1,52 @@
+/* Drugs page — mobile responsive */
+
+.drugs-page {
+  width: 100%;
+  max-width: 100%;
+  overflow-x: hidden;
+}
+
+/* Page actions row — wrap on small screens */
+.drugs-page .page-header > div:last-child {
+  flex-wrap: wrap;
+  gap: 0.5rem;
+}
+
+/* Table wraps horizontally */
+.drugs-page .table-container {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.drugs-page .custom-table {
+  min-width: 520px;
+}
+
+/* Category filter bar — horizontal scroll */
+.drugs-category-bar {
+  display: flex;
+  gap: 0.4rem;
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 0.25rem;
+  scrollbar-width: none;
+}
+
+.drugs-category-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.drugs-category-bar button {
+  flex-shrink: 0;
+}
+
+/* Modal fix on mobile */
+@media (max-width: 640px) {
+  .drugs-page .modal-card {
+    padding: 1rem;
+  }
+
+  .drugs-page .form-grid {
+    grid-template-columns: 1fr;
+  }
+}

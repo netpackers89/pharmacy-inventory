@@ -1,0 +1,164 @@
+/* Settings.css */
+.settings-page { padding: 0; }
+
+.settings-layout {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 1.5rem;
+  align-items: start;
+}
+
+.settings-sidebar {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  padding: 0.5rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+}
+
+.settings-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  width: 100%;
+  padding: 0.75rem 1rem;
+  background: none;
+  border: none;
+  border-radius: 8px;
+  text-align: left;
+  cursor: pointer;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: #64748b;
+  transition: all 0.15s;
+}
+.settings-tab-btn:hover { background: #f1f5f9; color: #0f172a; }
+.settings-tab-btn.active { background: #eff6ff; color: #2563eb; }
+
+.settings-content {
+  background: white;
+  border-radius: 12px;
+  border: 1px solid #e2e8f0;
+  padding: 1.75rem;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+  min-height: 500px;
+}
+
+.settings-section-title {
+  font-size: 1.15rem;
+  font-weight: 800;
+  color: #0f172a;
+}
+
+.settings-search {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 1rem;
+}
+.settings-search input {
+  border: none;
+  background: none;
+  outline: none;
+  flex: 1;
+  font-size: 0.875rem;
+}
+
+.settings-add-btn {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.6rem 1rem;
+  background: #2563eb;
+  color: white;
+  border: none;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-weight: 700;
+  white-space: nowrap;
+  transition: background 0.15s;
+}
+.settings-add-btn:hover { background: #1d4ed8; }
+
+/* Table action buttons */
+.tbl-action-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0.35rem 0.65rem;
+  border-radius: 6px;
+  font-size: 0.75rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.tbl-action-btn.edit { background: #eff6ff; color: #2563eb; }
+.tbl-action-btn.edit:hover { background: #dbeafe; }
+.tbl-action-btn.deactivate { background: #fef2f2; color: #dc2626; }
+.tbl-action-btn.deactivate:hover { background: #fee2e2; }
+.tbl-action-btn.activate { background: #f0fdf4; color: #16a34a; }
+.tbl-action-btn.activate:hover { background: #dcfce7; }
+.tbl-action-btn.reset { background: #fef9c3; color: #b45309; }
+.tbl-action-btn.reset:hover { background: #fef08a; }
+
+.btn-cancel { padding: 0.65rem 1.25rem; border: 1px solid #cbd5e1; border-radius: 8px; background: #fff; cursor: pointer; font-weight: 600; }
+.btn-save { display: flex; align-items: center; gap: 6px; padding: 0.65rem 1.25rem; background: #10b981; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 700; }
+
+/* Supplier Cards */
+.supplier-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  padding: 1.25rem;
+  transition: box-shadow 0.15s;
+}
+.supplier-card:hover { box-shadow: 0 4px 12px rgba(0,0,0,0.08); }
+
+/* Category Cards */
+.cat-card {
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.cat-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.875rem 1rem;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.cat-header:hover { background: #f1f5f9; }
+.cat-arrow { font-size: 0.7rem; color: #94a3b8; }
+.cat-body { border-top: 1px solid #e2e8f0; padding: 0.75rem 1.25rem; background: white; }
+.subcat-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.35rem 0;
+  font-size: 0.875rem;
+  color: #475569;
+  border-bottom: 1px dashed #f1f5f9;
+}
+.subcat-row:last-child { border-bottom: none; }
+
+/* Pricing */
+.pricing-field { display: flex; flex-direction: column; gap: 0.25rem; }
+.pricing-field label { font-weight: 700; font-size: 0.875rem; color: #374151; }
+
+@media (max-width: 768px) {
+  .settings-layout { grid-template-columns: 1fr; }
+  .settings-sidebar { flex-direction: row; overflow-x: auto; }
+  .settings-tab-btn { padding: 0.6rem 0.75rem; font-size: 0.78rem; }
+}
