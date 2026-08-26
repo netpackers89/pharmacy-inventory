@@ -197,3 +197,40 @@
   .mgmt-toolbar { align-items: stretch; flex-direction: column; }
   .mgmt-toolbar .filter-tabs { align-self: flex-start; }
 }
+
+/* ── Audit panel filters ── */
+.audit-filters {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+  gap: 0.6rem;
+  align-items: end;
+  padding: 0.85rem;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  margin-bottom: 1rem;
+}
+.audit-filters label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+  min-width: 0;
+}
+.audit-filters .form-control {
+  width: 100%;
+  min-width: 0;
+}
+.audit-filter-actions {
+  display: flex;
+  gap: 0.4rem;
+}
+
+@media (max-width: 640px) {
+  .audit-filters { grid-template-columns: repeat(2, 1fr); }
+  .audit-filter-actions { grid-column: 1 / -1; }
+}

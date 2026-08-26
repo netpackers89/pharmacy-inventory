@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { getIO } = require('../socket');
 
 /* Packaging units supported by NET-PHARMA (configurable conversions — never hard-coded assumptions). */
 const PACKAGING_UNITS = {
@@ -33,7 +34,11 @@ exports.addStock = async (req, res) => {
             sell_price              // selling price PER SELECTED UNIT
         } = req.body;
 
-        const current_user_id = user_id || (req.user && req.user.user_id);
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
 
         /* ── Validation: never save ambiguous stock ── */
         const unitKey = String(packaging_unit || '').toUpperCase();
@@ -137,7 +142,7 @@ exports.addStock = async (req, res) => {
         // Audit log inside the transaction
         await client.query(`
           INSERT INTO audit_logs (user_id, action, module, table_name, record_id, entity_type, entity_id, description, new_values, ip_address, user_agent, status)
-          VALUES ($1, 'CREATE', 'INVENTORY', 'batches', $2, 'batch', $2, $3, $4, $5, $6, 'SUCCESS')
+          VALUES ($1, 'STOCK_RECEIVED', 'INVENTORY', 'batches', $2, 'batch', $2, $3, $4, $5, $6, 'SUCCESS')
         `, [
           current_user_id,
           batch_id,
@@ -156,6 +161,8 @@ exports.addStock = async (req, res) => {
         ]);
 
         await client.query('COMMIT');
+        // Real-time: refresh stock everywhere (POS, dashboard, reports).
+        try { getIO().emit('data_updated', { topic: 'stock' }); } catch (_) {}
         res.status(200).json({
             message: 'Stock added successfully',
             batch_id,
@@ -195,6 +202,7 @@ exports.getStock = async (req, res) => {
                     m.generic_name,
                     m.brand_name,
                     m.strength,
+                    COALESCE(m.prescription_type, 'OTC') AS prescription_type,
                     b.batch_number,
                     b.expiry_date,
                     b.barcode,
@@ -230,6 +238,7 @@ exports.getStock = async (req, res) => {
                 m.generic_name,
                 m.brand_name,
                 m.strength,
+                COALESCE(m.prescription_type, 'OTC') AS prescription_type,
                 COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
                 (
                     SELECT b2.sell_price
@@ -261,7 +270,7 @@ exports.getStock = async (req, res) => {
                 m.status
             FROM medicines m
             LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
-            GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.status
+            GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.prescription_type, m.status
             ORDER BY m.generic_name ASC
         `);
 
@@ -321,7 +330,11 @@ exports.adjustStock = async (req, res) => {
     try {
         await client.query('BEGIN');
         const { batch_id, physical_count, user_id, reason, notes } = req.body;
-        const current_user_id = user_id || (req.user && req.user.user_id) || 1;
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
 
         // Lock the row
         const batchResult = await client.query(`SELECT b.stock_quantity, b.medicine_id FROM batches b WHERE b.batch_id = $1 FOR UPDATE`, [batch_id]);
@@ -351,6 +364,7 @@ exports.adjustStock = async (req, res) => {
         ]);
         
         await client.query('COMMIT');
+        try { getIO().emit('data_updated', { topic: 'stock' }); } catch (_) {}
         res.status(200).json({ message: 'Stock adjusted successfully', variance, previous_stock, new_stock: physical_count });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -587,7 +601,11 @@ exports.adjustStockBulk = async (req, res) => {
     try {
         await client.query('BEGIN');
         const { adjustments, user_id } = req.body;
-        const current_user_id = user_id || (req.user && req.user.user_id) || 1;
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
 
         for (const adj of adjustments) {
             const { batch_id, physical_count } = adj;
@@ -612,6 +630,7 @@ exports.adjustStockBulk = async (req, res) => {
         }
         
         await client.query('COMMIT');
+        try { getIO().emit('data_updated', { topic: 'stock' }); } catch (_) {}
         res.status(200).json({ message: 'Stock adjustments processed successfully' });
     } catch (err) {
         await client.query('ROLLBACK');

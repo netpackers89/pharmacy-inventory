@@ -1596,21 +1596,45 @@ const AuditPanel = () => {
   const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0, totalPages: 0 });
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
+  // Extended server-side filters — the CSV export uses EXACTLY these values.
+  const [actionFilter, setActionFilter] = useState("");
+  const [moduleFilter, setModuleFilter] = useState("");
+  const [statusFilter, setStatusFilter] = useState("");
+  const [userFilter, setUserFilter] = useState("");
+  const [meta, setMeta] = useState({ actions: [], modules: [] });
+
+  const activeFilters = {
+    from: dateFrom || undefined,
+    to: dateTo || undefined,
+    action: actionFilter || undefined,
+    module: moduleFilter || undefined,
+    status: statusFilter || undefined,
+    user: userFilter.trim() || undefined,
+  };
+
+  const loadFilters = () => {
+    import("../services/api").then(({ default: api }) => {
+      api.get("/audit-logs/meta/actions")
+        .then((r) => setMeta({
+          actions: r.data?.actions || [],
+          modules: r.data?.modules || [],
+        }))
+        .catch(() => {});
+    });
+  };
+
+  useEffect(() => {
+    loadFilters();
+  }, []);
 
   const load = (pageNum = page) => {
     setLoading(true);
     setLoadError(false);
     import("../services/api").then(({ default: api }) => {
       api
-        .get("/audit-logs", { params: {
-          page: pageNum,
-          limit: 50,
-          ...(dateFrom && { from: dateFrom }),
-          ...(dateTo && { to: dateTo }),
-        } })
+        .get("/audit-logs", { params: { page: pageNum, limit: 50, ...activeFilters } })
         .then((r) => {
           const body = r.data || {};
-          // Structured response: { success, data, pagination }
           setLogs(Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : []);
           if (body.pagination) setPagination(body.pagination);
           setLoading(false);
@@ -1628,20 +1652,77 @@ const AuditPanel = () => {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [page]);
 
+  const exportCSV = () => {
+    import("../services/api").then(({ reportsAPI }) => {
+      const url = reportsAPI.exportAuditLogsUrl(activeFilters);
+      window.open(url, "_blank");
+    });
+  };
+
   return (
     <div>
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: "0.6rem", marginBottom: "1rem" }}>
-        <h2 className="settings-section-title">Audit Logs</h2>
-        <div style={{ display: "flex", alignItems: "center", gap: "0.5rem", flexWrap: "wrap" }}>
-          <input type="date" className="form-control" style={{ maxWidth: 150 }} value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="From date" />
-          <span style={{ color: "var(--text-muted)", fontSize: "0.8rem" }}>to</span>
-          <input type="date" className="form-control" style={{ maxWidth: 150 }} value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="To date" />
+        <h2 className="settings-section-title">Audit &amp; Security Logs</h2>
+        <button type="button" className="btn btn-secondary btn-sm" onClick={exportCSV} disabled={loading}>
+          Export CSV
+        </button>
+      </div>
+
+      {/* Filters */}
+      <div className="audit-filters">
+        <label>
+          From
+          <input type="date" className="form-control" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)} aria-label="From date" />
+        </label>
+        <label>
+          To
+          <input type="date" className="form-control" value={dateTo} onChange={(e) => setDateTo(e.target.value)} aria-label="To date" />
+        </label>
+        <label>
+          Action
+          <select className="form-control" value={actionFilter} onChange={(e) => setActionFilter(e.target.value)} aria-label="Action filter">
+            <option value="">All</option>
+            {(meta.actions.length ? meta.actions : ["LOGIN", "LOGIN_BLOCKED", "LOGOUT", "SALE_CREATED", "SALE_FAILED", "CONTROLLED_SALE", "STOCK_RECEIVED", "PHYSICAL_COUNT", "MEDICINE_CREATED", "MEDICINE_UPDATED", "CREATE", "UPDATE", "PASSWORD_RESET", "SESSION_REVOKED", "ACCOUNT_LOCKED", "AUTHZ_DENIED", "AUDIT_EXPORTED", "GUEST_LOGIN"]).map((a) => (
+              <option key={a} value={a}>{a}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Module
+          <select className="form-control" value={moduleFilter} onChange={(e) => setModuleFilter(e.target.value)} aria-label="Module filter">
+            <option value="">All</option>
+            {(meta.modules.length ? meta.modules : ["AUTH", "SECURITY", "SALES", "POS", "INVENTORY", "MEDICINES", "USERS"]).map((m) => (
+              <option key={m} value={m}>{m}</option>
+            ))}
+          </select>
+        </label>
+        <label>
+          Result
+          <select className="form-control" value={statusFilter} onChange={(e) => setStatusFilter(e.target.value)} aria-label="Result filter">
+            <option value="">All</option>
+            <option value="SUCCESS">Success</option>
+            <option value="FAILED">Failed</option>
+          </select>
+        </label>
+        <label>
+          User
+          <input type="text" className="form-control" placeholder="Name or username" value={userFilter} onChange={(e) => setUserFilter(e.target.value)} aria-label="User filter" />
+        </label>
+        <div className="audit-filter-actions">
           <button type="button" className="btn btn-secondary btn-sm" onClick={() => { setPage(1); load(1); }}>
             Apply
           </button>
-          <span style={{ fontSize: "0.76rem", color: "var(--text-faint)" }}>
-            Read-only · {pagination.total} record{pagination.total === 1 ? "" : "s"}
-          </span>
+          <button
+            type="button"
+            className="btn btn-ghost btn-sm"
+            onClick={() => {
+              setDateFrom(""); setDateTo(""); setActionFilter(""); setModuleFilter("");
+              setStatusFilter(""); setUserFilter(""); setPage(1);
+              setTimeout(() => load(1), 0);
+            }}
+          >
+            Clear
+          </button>
         </div>
       </div>
 
@@ -1656,20 +1737,21 @@ const AuditPanel = () => {
                 <th>Module</th>
                 <th>Record</th>
                 <th>Description</th>
+                <th>IP</th>
                 <th>Status</th>
               </tr>
             </thead>
             <tbody>
               {loading && (
                 <tr>
-                  <td colSpan="7" style={{ textAlign: "center", padding: "2rem", color: "var(--text-faint)" }}>
+                  <td colSpan="8" style={{ textAlign: "center", padding: "2rem", color: "var(--text-faint)" }}>
                     Loading audit logs…
                   </td>
                 </tr>
               )}
               {!loading && loadError && (
                 <tr>
-                  <td colSpan="7" style={{ textAlign: "center", padding: "2rem" }}>
+                  <td colSpan="8" style={{ textAlign: "center", padding: "2rem" }}>
                     Unable to load audit logs.{" "}
                     <button type="button" className="btn btn-secondary btn-sm" onClick={() => load()}>Try Again</button>
                   </td>
@@ -1677,8 +1759,8 @@ const AuditPanel = () => {
               )}
               {!loading && !loadError && logs.length === 0 && (
                 <tr>
-                  <td colSpan="7" style={{ textAlign: "center", padding: "2rem", color: "var(--text-faint)" }}>
-                    No audit records for this period yet.
+                  <td colSpan="8" style={{ textAlign: "center", padding: "2rem", color: "var(--text-faint)" }}>
+                    No audit records match these filters.
                   </td>
                 </tr>
               )}
@@ -1690,9 +1772,14 @@ const AuditPanel = () => {
                     </td>
                     <td>
                       <strong>{log.full_name || log.username || (log.user_id ? `#${log.user_id}` : "System")}</strong>
+                      {log.username && log.full_name && (
+                        <small style={{ display: "block", color: "var(--text-faint)", fontSize: "0.7rem" }}>{log.username}</small>
+                      )}
                     </td>
                     <td>
-                      <span className="badge badge-primary">{log.action}</span>
+                      <span className={`badge ${["LOGIN_BLOCKED", "SALE_FAILED", "AUTHZ_DENIED", "ACCOUNT_LOCKED"].includes(log.action) || log.status === "FAILED" ? "badge-danger" : log.module === "SECURITY" ? "badge-warning" : "badge-primary"}`}>
+                        {log.action}
+                      </span>
                     </td>
                     <td style={{ fontFamily: "monospace", fontSize: "0.75rem" }}>{log.module || "—"}</td>
                     <td style={{ fontSize: "0.78rem" }}>
@@ -1703,6 +1790,7 @@ const AuditPanel = () => {
                         {log.description || "—"}
                       </span>
                     </td>
+                    <td style={{ fontSize: "0.72rem", fontFamily: "monospace" }}>{log.ip_address || "—"}</td>
                     <td>
                       <span className={`badge ${log.status === "FAILED" ? "badge-danger" : "badge-secondary"}`}>
                         {log.status}
@@ -1715,7 +1803,7 @@ const AuditPanel = () => {
         </div>
 
         <div className="table-footer">
-          <span>Page {pagination.page} of {Math.max(1, pagination.totalPages)}</span>
+          <span>Page {pagination.page} of {Math.max(1, pagination.totalPages)} · {pagination.total} record{pagination.total === 1 ? "" : "s"} · timestamps shown in your local timezone</span>
           <div className="pagination">
             <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={pagination.page <= 1}>‹ Prev</button>
             <button onClick={() => setPage((p) => Math.min(pagination.totalPages || 1, p + 1))} disabled={pagination.page >= pagination.totalPages}>Next ›</button>

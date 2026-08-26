@@ -4,6 +4,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { reportsAPI } from '../services/api';
+import { useAuth } from '../context/AuthContext';
 import {
   TrendingUp, Package, DollarSign, ShoppingBag,
   AlertTriangle, Activity, BarChart2, Users, Download, RefreshCw, Shield
@@ -25,6 +26,8 @@ const fmt = (n) => parseFloat(n || 0).toLocaleString('en-US', { minimumFractionD
 const fmtDate = (d) => d ? new Date(d).toLocaleDateString('en-GB') : '—';
 
 export const Reports = () => {
+  const { user } = useAuth();
+  const isAdmin = user?.role === 'ADMIN';
   const [activeTab, setActiveTab] = useState('overview');
   const [dateFrom, setDateFrom] = useState(() => {
     const d = new Date(); d.setDate(1); return d.toISOString().slice(0, 10);
@@ -47,9 +50,9 @@ export const Reports = () => {
         </div>
       </div>
 
-      {/* Tab Nav */}
+      {/* Tab Nav — Audit Log is ADMIN-only (enforced server-side too) */}
       <div className="reports-tabs">
-        {TABS.map(t => (
+        {TABS.filter(t => t.id !== 'audit' || isAdmin).map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)}
             className={`report-tab-btn ${activeTab === t.id ? 'active' : ''}`}>
             {t.icon} {t.label}
@@ -549,20 +552,36 @@ const AuditTab = ({ from, to }) => {
   const load = () => {
     setLoading(true);
     reportsAPI.getAuditLogs({ from, to, action: actionFilter || undefined })
-      .then(r => { setItems(r.data); setLoading(false); })
-      .catch(() => setLoading(false));
+      .then(r => {
+        // Structured response: { success, data, pagination }
+        setItems(Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data) ? r.data : []);
+        setLoading(false);
+      })
+      .catch(() => { setItems([]); setLoading(false); });
   };
   
   useEffect(() => { load(); }, [from, to, actionFilter]);
   
   const ACTION_COLORS = {
     CREATE: '#15803d',
+    MEDICINE_CREATED: '#15803d',
+    STOCK_RECEIVED: '#8b5cf6',
     UPDATE: '#f59e0b',
+    MEDICINE_UPDATED: '#f59e0b',
     DELETE: '#b91c1c',
     SALE: '#5b6472',
+    SALE_CREATED: '#5b6472',
+    SALE_FAILED: '#b91c1c',
+    CONTROLLED_SALE: '#b91c1c',
     RESUPPLY: '#8b5cf6',
     ADJUSTMENT: '#f97316',
+    PHYSICAL_COUNT: '#f97316',
     LOGIN: '#64748b',
+    LOGOUT: '#64748b',
+    LOGIN_BLOCKED: '#b91c1c',
+    ACCOUNT_LOCKED: '#b91c1c',
+    AUTHZ_DENIED: '#b91c1c',
+    SESSION_REVOKED: '#b91c1c',
   };
   
   return (

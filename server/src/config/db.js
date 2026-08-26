@@ -46,13 +46,26 @@ const initializeDB = async () => {
       `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS counseling_note TEXT`,
       // Users may authenticate with an email-style username; keep a dedicated column optional
       `ALTER TABLE users ADD COLUMN IF NOT EXISTS email VARCHAR(150)`,
-      // Master-data management: audit-friendly timestamps + optional descriptions
-      `ALTER TABLE categories ADD COLUMN IF NOT EXISTS description TEXT`,
-      `ALTER TABLE categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
-      `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS description TEXT`,
-      `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
-      `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
-    ];
+    // Idempotent POS checkout: the same operation_id can never create a
+    // second sale (network retries are safe).
+    `ALTER TABLE sales ADD COLUMN IF NOT EXISTS operation_id VARCHAR(100)`,
+    `CREATE UNIQUE INDEX IF NOT EXISTS sales_operation_id_unique ON sales (operation_id) WHERE operation_id IS NOT NULL`,
+    // Master-data management: audit-friendly timestamps + optional descriptions
+    `ALTER TABLE categories ADD COLUMN IF NOT EXISTS description TEXT`,
+    `ALTER TABLE categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS description TEXT`,
+    `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+  ];
+  // System-level security events (failed logins of unknown accounts,
+  // lockouts) have NO user row — audit columns must be nullable.
+  for (const ddl of [
+    `ALTER TABLE audit_logs ALTER COLUMN user_id DROP NOT NULL`,
+    `ALTER TABLE audit_logs ALTER COLUMN table_name DROP NOT NULL`,
+    `ALTER TABLE audit_logs ALTER COLUMN record_id DROP NOT NULL`,
+  ]) {
+    try { await client.query(ddl); } catch (_) { /* already nullable */ }
+  }
     for (const ddl of safeColumns) {
       try { await client.query(ddl); }
       catch (e) { console.warn('Migration skipped:', e.message); }
@@ -354,13 +367,9 @@ const initializeDB = async () => {
       ON CONFLICT (setting_key) DO NOTHING;
     `);
 
-    const adminCheck = await client.query(`SELECT user_id FROM users WHERE username = 'admin'`);
-    if (adminCheck.rows.length === 0) {
-        await client.query(`
-          INSERT INTO users (role, full_name, username, password_hash, status)
-          VALUES ('ADMIN', 'System Admin', 'admin', '$2b$10$YourHashHere...', 'ACTIVE')
-        `); // We might need a real hash or just leave this out since they already have users, wait the user had an admin seeded in their old script
-    }
+    // NOTE: the initial ADMIN account is seeded by src/seed.js with a REAL
+    // bcrypt hash. Never insert a placeholder hash here — it would block
+    // the seeder and create an account nobody can sign into.
 
     const catCheck = await client.query(`SELECT category_id FROM categories LIMIT 1`);
     if (catCheck.rows.length === 0) {

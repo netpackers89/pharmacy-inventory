@@ -1,14 +1,15 @@
 const express = require('express');
 const router = express.Router();
 const medicineController = require('../controllers/medicineController');
-const { authenticate } = require('../middleware/auth');
 
-router.get('/', authenticate, medicineController.getAllMedicines);
-router.get('/:id', authenticate, medicineController.getMedicineById);
-router.post('/', authenticate, medicineController.addMedicine);
-router.put('/:id', authenticate, medicineController.updateMedicine);
-router.delete('/:id', authenticate, medicineController.deleteMedicine);
-router.post('/import/preview', authenticate, medicineController.previewImport);
-router.post('/import/confirm', authenticate, medicineController.confirmImport);
+// NOTE: authentication is enforced GLOBALLY in app.js before any router
+// runs — every request here is already authenticated with an open session.
+router.get('/', medicineController.getAllMedicines);
+router.get('/:id', medicineController.getMedicineById);
+router.post('/', medicineController.addMedicine);
+router.put('/:id', medicineController.updateMedicine);
+router.delete('/:id', medicineController.deleteMedicine);
+router.post('/import/preview', medicineController.previewImport);
+router.post('/import/confirm', medicineController.confirmImport);
 
 module.exports = router;

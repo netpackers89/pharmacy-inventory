@@ -85,7 +85,7 @@ export const AuthPage = () => {
     setError('');
 
     if (!identifier.trim() || !password.trim()) {
-      setError('Please enter your email and password.');
+      setError('Please enter your username and password.');
       return;
     }
 
@@ -95,7 +95,7 @@ export const AuthPage = () => {
       if (result && !result.success) {
         setError(
           result.error === 'Invalid credentials'
-            ? 'Please check your email and password and try again.'
+            ? 'Please check your username and password and try again.'
             : result.error || 'Unable to sign in. Please try again.'
         );
       }
@@ -163,15 +163,14 @@ export const AuthPage = () => {
 
           <form onSubmit={handleSubmit} className="auth-form" noValidate>
             <div className="auth-field">
-              <label htmlFor="auth-identifier">EMAIL</label>
+              <label htmlFor="auth-identifier">USERNAME</label>
               <input
                 id="auth-identifier"
                 type="text"
-                inputMode="email"
-                placeholder="you@pharmacy.com"
+                autoComplete="username"
+                placeholder="Enter your username"
                 value={identifier}
                 onChange={(e) => setIdentifier(e.target.value)}
-                autoComplete="username"
                 required
               />
             </div>

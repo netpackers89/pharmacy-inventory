@@ -41,7 +41,9 @@ api.interceptors.response.use(
 
 export const authAPI = {
   login: (data) => api.post('/auth/login', data),
-  guest: (name) => api.post('/auth/guest', { name })
+  guest: (name) => api.post('/auth/guest', { name }),
+  logout: () => api.post('/auth/logout', {}),
+  mySessions: () => api.get('/auth/sessions/mine')
 };
 
 export const medicinesAPI = {
@@ -85,6 +87,7 @@ export const suppliersAPI = {
 
 export const usersAPI = {
   getAll: () => api.get('/users'),
+  getCount: () => api.get('/users/count'),
   create: (data) => api.post('/users', data),
   update: (id, data) => api.put(`/users/${id}`, data),
   changeStatus: (id, status) => api.put(`/users/${id}/status`, { status }),
@@ -119,7 +122,14 @@ export const reportsAPI = {
   getMovements: (params) => api.get('/reports/movements', { params }),
   getMoving: () => api.get('/reports/moving'),
   getUsers: () => api.get('/reports/users'),
-  getAuditLogs: (params) => api.get('/audit-logs', { params })
+  getAuditLogs: (params) => api.get('/audit-logs', { params }),
+  // ADMIN-only CSV export — the backend applies the SAME filters as the table.
+  exportAuditLogsUrl: (params) => {
+    const qs = new URLSearchParams(
+      Object.entries(params || {}).filter(([, v]) => v !== undefined && v !== null && v !== '')
+    ).toString();
+    return `${API_BASE}/audit-logs/export${qs ? `?${qs}` : ''}`;
+  }
 };
 
 export const aiAPI = {

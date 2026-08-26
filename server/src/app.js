@@ -64,10 +64,33 @@ app.use((req, res, next) => {
 const { auditMiddleware } = require('./middleware/auditMiddleware');
 app.use(auditMiddleware);
 
+// Rate limiting — protects every API route from abuse / bot floods.
+const { apiLimiter } = require('./middleware/rateLimit');
+app.use('/api', apiLimiter);
+
 // Guest read-only enforcement — blocks ALL write requests made with a
 // guest token, server-side, before any controller runs.
 const { enforceGuestReadOnly } = require('./middleware/auth');
 app.use(enforceGuestReadOnly);
+
+/*
+ * GLOBAL AUTHENTICATION GATE.
+ *
+ * Every /api route requires a valid JWT with an open server-side session,
+ * EXCEPT the explicit public endpoints whitelisted below (login, guest
+ * entry, health). This guarantees no data route can ever be mounted
+ * without authentication by accident.
+ */
+const PUBLIC_PATHS = new Set([
+  '/api/auth/login',
+  '/api/auth/guest',
+  '/api/health',
+]);
+const { authenticate } = require('./middleware/auth');
+app.use((req, res, next) => {
+  if (PUBLIC_PATHS.has(req.path)) return next();
+  return authenticate(req, res, next);
+});
 
 
 
@@ -91,11 +114,12 @@ app.get('/api/health', (req, res) => {
   res.json({ status: 'ok', app: 'Pharmacy Management System API', version: '1.0.0', time: new Date() });
 });
 
-// Error handling middleware
+// Error handling middleware — never leaks SQL / internal details in production
 app.use((err, req, res, next) => {
   console.error("Global express error handler:", err);
+  const isProd = (process.env.NODE_ENV || '').toLowerCase() === 'production';
   res.status(err.status || 500).json({
-    error: err.message || 'Internal Server Error'
+    error: isProd ? 'Internal Server Error' : (err.message || 'Internal Server Error')
   });
 });
 

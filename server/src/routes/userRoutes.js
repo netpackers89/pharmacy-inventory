@@ -4,11 +4,18 @@ const userController = require('../controllers/userController');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 
 /*
- * User management is ADMINISTRATOR-ONLY.
- * Every route below requires a valid authenticated session AND the ADMIN role.
- * Guests, PHARMACY users and unauthenticated requests are rejected server-side.
+ * Lightweight staff count for dashboards — any authenticated staff member
+ * may read the NUMBER of active accounts (no personal data exposed).
  */
-router.use(authenticate, requireAdmin);
+router.get('/count', authenticate, userController.getUserCount);
+
+/*
+ * Everything below is ADMINISTRATOR-ONLY.
+ * Authentication is enforced globally in app.js; this adds the ADMIN role
+ * check. Guests, PHARMACY users and unauthenticated requests are all
+ * rejected server-side.
+ */
+router.use(requireAdmin);
 
 router.get('/', userController.getAllUsers);
 router.post('/', userController.addUser);

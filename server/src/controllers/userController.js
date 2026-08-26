@@ -43,6 +43,19 @@ exports.getAllUsers = async (req, res) => {
   }
 };
 
+// Active staff account count — safe for any authenticated staff member.
+exports.getUserCount = async (_req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT COUNT(*) AS count FROM users WHERE status = 'ACTIVE'`
+    );
+    res.json({ count: parseInt(result.rows[0].count, 10) });
+  } catch (err) {
+    console.error('[USER_COUNT]', err.message);
+    res.status(500).json({ error: 'Failed to retrieve user count' });
+  }
+};
+
 // Add user (administrator creating a staff/pharmacy account)
 exports.addUser = async (req, res) => {
   try {

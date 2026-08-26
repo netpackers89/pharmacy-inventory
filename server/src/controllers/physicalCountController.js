@@ -50,10 +50,15 @@ exports.createPhysicalCount = async (req, res) => {
     try {
         await client.query('BEGIN');
 
-        const { user_id, notes, items } = req.body;
+        const { notes, items } = req.body;
 
-        // Resolve user_id from body or JWT token
-        const current_user_id = user_id || (req.user && req.user.user_id);
+        // Identity ALWAYS comes from the authenticated token — never the body.
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            await client.query('ROLLBACK');
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
 
         if (!items || !Array.isArray(items) || items.length === 0) {
             // Roll back the empty transaction and respond with a validation error

@@ -40,8 +40,8 @@ export const Dashboard = ({ onNavigate }) => {
     salesAPI.getAll()
       .then(res => { if (!cancelled) setRevenue(res.data?.total_revenue ?? '0.00'); })
       .catch(() => { if (!cancelled) setRevenue('0.00'); });
-    usersAPI.getAll()
-      .then(res => { if (!cancelled) setUserCount(Array.isArray(res.data) ? res.data.length : 0); })
+    usersAPI.getCount()
+      .then(res => { if (!cancelled) setUserCount(Number(res.data?.count ?? 0)); })
       .catch(() => { if (!cancelled) setUserCount(0); });
     inventoryAPI.getAlerts()
       .then(res => {

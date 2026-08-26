@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import "./POS.css";
 import {
   AlertTriangle,
@@ -7,42 +7,39 @@ import {
   QrCode,
   Search,
   ShoppingCart,
-  Stethoscope,
   Trash2,
   X,
   ShieldCheck,
   Calculator,
   MessageSquareText,
-  Printer,
+  Lock,
+  RefreshCw,
 } from "lucide-react";
 
 import { inventoryAPI, salesAPI, ddiAPI } from "../services/api";
-import { useAuth } from "../context/AuthContext";
+import { socket } from "../services/socket";
 import { useToast } from "../context/ToastContext";
 import { EmptyState } from "../components/Feedback";
 
 /*
-  POS WORKFLOW
+  POS WORKFLOW (prescription-type driven — there is NO "RX" button)
 
   Scan/Search
-      -> find existing inventory medicine
-      -> add the exact medicine to the current POS
-      -> enter dose/frequency/duration/route
-      -> automatically calculate required quantity
-      -> automatically show counseling
-      -> when 2+ medicines exist, run multi-drug interaction checking
-      -> validate stock
-      -> checkout
-      -> backend creates the sale and deducts stock
+      -> medicine is identified from REAL inventory data
+      -> its stored prescription_type controls the workflow automatically:
+           OTC          -> simple quantity + checkout
+           PRESCRIPTION -> dose/frequency/duration/route panel appears,
+                           required single doses are CALCULATED READ-ONLY,
+                           dispensing strips are adjustable
+           CONTROLLED   -> same as prescription + mandatory authorization
+                           note enforced by the Express backend at checkout
+      -> multi-drug interaction checking runs on every cart change
+      -> checkout uses an idempotent operation_id (network retries can
+         never create a duplicate sale)
 
   IMPORTANT:
   POS never creates a medicine or a batch.
   It only consumes existing inventory records.
-
-  CART RULES:
-  - Scanning a NEW medicine appends it to the cart.
-  - Re-scanning a medicine already in the cart increases its quantity.
-  - Existing items are never replaced or removed by a scan.
 */
 
 const FREQUENCIES = [
@@ -91,66 +88,80 @@ const getFrequency = (code) =>
 const getRoute = (code) =>
   ROUTES.find((route) => route.code === code) || ROUTES[0];
 
-/* PRICE RULE:
-   current_price = price of ONE STRIP.
-   strip_size = number of single doses inside one strip (default 10). */
+const normalizeRxType = (value) => {
+  const type = String(value || "").toUpperCase();
+  if (type === "PRESCRIPTION" || type === "CONTROLLED") return type;
+  return "OTC";
+};
+
+/*
+ * CLINICAL CALCULATION — the source of truth for REQUIRED single doses.
+ * This value is always derived; it can never be typed in by hand.
+ *
+ * PRICE RULE:
+ *   current_price = price of ONE STRIP (from the live FEFO batch).
+ *   strip_size    = number of single doses inside one strip.
+ */
 const calculateDispensing = (item) => {
   const dose = Math.max(0, numberOr(item.dose_per_admin, 0));
   const duration = Math.max(0, numberOr(item.duration_days, 0));
   const frequency = getFrequency(item.frequency_code);
 
-  const stripSize = Math.max(
-    1,
-    Math.floor(numberOr(item.strip_size ?? item.package_capacity, 10)),
-  );
+  const stripSize = Math.max(1, Math.floor(numberOr(item.strip_size, 10)));
   const stripPrice = Math.max(0, numberOr(item.current_price, 0));
+  const perDosePrice = stripPrice / stripSize;
 
+  let required_units;
+  let formula;
   if (frequency.per_day === null) {
-    const required_units = Math.max(1, Math.ceil(numberOr(item.quantity, 1)));
-    const strips = Math.ceil(required_units / stripSize);
-    const dispense_units = strips * stripSize;
-
-    return {
-      required_units,
-      dispense_units,
-      strips,
-      strip_size: stripSize,
-      strip_price: stripPrice,
-      single_unit_price: stripPrice / stripSize,
-      total_price: strips * stripPrice,
-      formula: `${required_units} single dose(s) ÷ ${stripSize} single doses/strip = ${strips} strip(s)`,
-    };
+    // PRN / STAT — a single administration is the requirement.
+    required_units = Math.max(1, Math.ceil(dose || 1));
+    formula = `${required_units} single dose(s) — ${frequency.code}`;
+  } else {
+    required_units = Math.max(
+      1,
+      Math.ceil(dose * frequency.per_day * duration)
+    );
+    formula = `${dose} single dose(s) × ${frequency.per_day} time(s)/day × ${duration} day(s) = ${required_units} single doses`;
   }
 
-  const required_units = Math.ceil(dose * frequency.per_day * duration);
-  const strips = Math.ceil(required_units / stripSize);
-  const dispense_units = strips * stripSize;
+  const suggested_strips = Math.max(1, Math.ceil(required_units / stripSize));
 
   return {
     required_units,
-    dispense_units,
-    strips,
+    suggested_strips,
     strip_size: stripSize,
     strip_price: stripPrice,
-    single_unit_price: stripPrice / stripSize,
-    total_price: strips * stripPrice,
-    formula: `${dose} single dose(s) × ${frequency.per_day} times/day × ${duration} days = ${required_units} single doses`,
+    single_unit_price: perDosePrice,
+    formula,
   };
+};
+
+/* Line totals follow the DISPENSING unit:
+   - PRESCRIPTION/CONTROLLED : strips × strip-price
+   - OTC                     : single doses × (strip-price ÷ strip size) */
+const lineTotalFor = (item) => {
+  const stripPrice = Math.max(0, numberOr(item.current_price, 0));
+  if (item.rx_required) {
+    return numberOr(item.strips, 1) * stripPrice;
+  }
+  const stripSize = Math.max(1, Math.floor(numberOr(item.strip_size, 10)));
+  return numberOr(item.quantity, 0) * (stripPrice / stripSize);
 };
 
 const generateCounseling = (item) => {
   const frequency = getFrequency(item.frequency_code);
   const route = getRoute(item.route_of_admin);
+  const routeName = route.label.split("—")[1]?.trim() || route.label;
 
   if (frequency.per_day === null) {
     if (item.frequency_code === "STAT") {
-      return `Take ${item.dose_per_admin} unit(s) immediately via ${route.label.split("—")[1]?.trim() || route.label}.`;
+      return `Take ${item.dose_per_admin} unit(s) immediately via ${routeName}.`;
     }
-
-    return `Take ${item.dose_per_admin} unit(s) as needed via ${route.label.split("—")[1]?.trim() || route.label}, according to the pharmacist's instructions.`;
+    return `Take ${item.dose_per_admin} unit(s) as needed via ${routeName}, according to the pharmacist's instructions.`;
   }
 
-  return `Take ${item.dose_per_admin} unit(s) ${frequency.label.split("—")[1]?.trim() || frequency.label} for ${item.duration_days} days via ${route.label.split("—")[1]?.trim() || route.label}. Follow the prescribed course and do not change the dose without professional advice.`;
+  return `Take ${item.dose_per_admin} unit(s) ${frequency.label.split("—")[1]?.trim() || frequency.label} for ${item.duration_days} days via ${routeName}. Follow the prescribed course and do not change the dose without professional advice.`;
 };
 
 const normalizeMedicine = (medicine) => ({
@@ -159,27 +170,27 @@ const normalizeMedicine = (medicine) => ({
   generic_name: medicine.generic_name || medicine.name || "Unknown medicine",
   brand_name: medicine.brand_name || "",
   strength: medicine.strength || "",
+  prescription_type: normalizeRxType(medicine.prescription_type),
   stock_on_hand: numberOr(medicine.stock_on_hand ?? medicine.stock_quantity, 0),
-  // current_price is the price of ONE STRIP.
+  // current_price is the price of ONE STRIP from the live batch record.
   current_price: numberOr(
     medicine.current_price ?? medicine.sell_price ?? medicine.price,
-    0,
+    0
   ),
   strip_size: Math.max(
     1,
     Math.floor(
       numberOr(
         medicine.strip_size ??
-          medicine.package_capacity ??
-          medicine.units_per_strip,
-        10,
-      ),
-    ),
+          medicine.units_per_package ??
+          medicine.package_capacity,
+        10
+      )
+    )
   ),
-  package_capacity: Math.max(1, numberOr(medicine.package_capacity, 10)),
-  batch_id: medicine.batch_id ?? medicine.batch?.id ?? null,
-  batch_number: medicine.batch_number ?? medicine.batch?.batch_number ?? "",
-  expiry_date: medicine.expiry_date ?? medicine.batch?.expiry_date ?? null,
+  batch_id: medicine.batch_id ?? null,
+  batch_number: medicine.batch_number ?? "",
+  expiry_date: medicine.expiry_date ?? null,
 });
 
 const getCartItemKey = (item) => {
@@ -189,8 +200,14 @@ const getCartItemKey = (item) => {
 };
 
 const escapeHtml = (unsafe) => {
-  if (!unsafe && unsafe !== 0) return '';
-  return String(unsafe).replace(/[&<>"']/g, function(m){ return ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[m]; });
+  if (!unsafe && unsafe !== 0) return "";
+  return String(unsafe).replace(/[&<>"']/g, (m) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[m]);
 };
 
 export const POS = ({
@@ -200,7 +217,6 @@ export const POS = ({
   cart: cartProp,
   setCart: setCartProp,
 }) => {
-  const { user } = useAuth();
   const { toast, withLoading } = useToast();
 
   // Cart is lifted to App so page changes never clear an ongoing sale.
@@ -211,6 +227,7 @@ export const POS = ({
   const [stockList, setStockList] = useState([]);
   const [stockLoading, setStockLoading] = useState(true);
   const [stockError, setStockError] = useState(false);
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [searchQuery, setSearchQuery] = useState("");
 
   const [aiWarnings, setAiWarnings] = useState([]);
@@ -221,51 +238,93 @@ export const POS = ({
   const [showDetails, setShowDetails] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
 
-  const [checkoutSuccess, setCheckoutSuccess] = useState(false);
-  const [finalSaleId, setFinalSaleId] = useState(null);
-  const [finalTotal, setFinalTotal] = useState(0);
+  /*
+    SUCCESS MODAL STATE — printing is never part of the transaction.
+    The sale is committed first; only then is "Print receipt?" offered.
+  */
+  const [saleResult, setSaleResult] = useState(null); // { sale_id, total, operation_id, items }
+  const [showPrintPrompt, setShowPrintPrompt] = useState(false);
 
-  const [dispensingDrawer, setDispensingDrawer] = useState({
-    open: false,
-    itemIndex: null,
-  });
+  // Idempotency: one operation_id per checkout attempt sequence. A network
+  // failure + retry reuses the SAME id, so the backend can de-duplicate.
+  const operationIdRef = useRef(null);
+  const ensureOperationId = () => {
+    if (!operationIdRef.current) {
+      operationIdRef.current =
+        typeof crypto !== "undefined" && crypto.randomUUID
+          ? crypto.randomUUID()
+          : `op-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+    }
+    return operationIdRef.current;
+  };
 
-  const [drawerForm, setDrawerForm] = useState({
-    dose_per_admin: 1,
-    frequency_code: "BID",
-    duration_days: 7,
-    route_of_admin: "PO",
-    counseling_note: "",
-    package_capacity: 10,
-  });
+  const stockFetchRef = useRef(false);
+
+  /* ── REAL-TIME STOCK ───────────────────────────────────────────────────── */
+  const refreshStock = async ({ silent = false } = {}) => {
+    if (!silent) setStockLoading(true);
+    try {
+      const response = await inventoryAPI.getStock();
+      const rows = Array.isArray(response.data) ? response.data.map(normalizeMedicine) : [];
+      setStockList(rows);
+      setStockError(false);
+      setLastUpdated(new Date());
+
+      // Live reconciliation: update stock/prices of items already in the
+      // cart and warn when a batch price changed while the POS was open.
+      setCart((current) =>
+        current.map((item) => {
+          const fresh = rows.find((r) => r.medicine_id === item.medicine_id);
+          if (!fresh) return item;
+          const next = {
+            ...item,
+            stock_on_hand: fresh.stock_on_hand,
+            expiry_date: item.batch_id ? item.expiry_date : fresh.expiry_date,
+          };
+          if (
+            !item.batch_id &&
+            Number(fresh.current_price) !== Number(item.current_price)
+          ) {
+            next.current_price = fresh.current_price;
+            setTimeout(
+              () =>
+                toast.warning(
+                  `Price updated: ${item.generic_name} is now ETB ${Number(fresh.current_price).toFixed(2)} / strip. Please review the total.`
+                ),
+              0
+            );
+          }
+          return next;
+        })
+      );
+    } catch {
+      setStockError(true);
+      if (!silent) {
+        setStockList([]);
+        toast.error("Unable to retrieve current stock.");
+      }
+    } finally {
+      setStockLoading(false);
+    }
+  };
 
   useEffect(() => {
-    let cancelled = false;
-    setStockLoading(true);
-    setStockError(false);
+    refreshStock();
+    stockFetchRef.current = true;
 
-    inventoryAPI.getStock()
-      .then((response) => {
-        if (cancelled) return;
-        const rows = response.data;
-        setStockList(Array.isArray(rows) ? rows.map(normalizeMedicine) : []);
-        setStockLoading(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setStockList([]);
-        setStockError(true);
-        setStockLoading(false);
-      });
+    // Socket events keep this POS in sync when OTHER counters sell stock.
+    socket.connect();
+    const onDataUpdated = () => refreshStock({ silent: true });
+    socket.on("data_updated", onDataUpdated);
 
-    return () => { cancelled = true; };
+    return () => {
+      socket.off("data_updated", onDataUpdated);
+      socket.disconnect();
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  /*
-    Scanner integration:
-    The scanner parent passes an existing inventory medicine here.
-    It is appended to the current POS cart — never replacing it.
-  */
+  /* Scanner integration: scanned medicines join the current sale. */
   useEffect(() => {
     if (!scannedMedicine) return;
 
@@ -278,11 +337,7 @@ export const POS = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scannedMedicine]);
 
-  /*
-    Drug–drug interaction checking (LOCAL DDI dataset — not AI):
-    Runs whenever the medicine list changes. Unique unordered pairs are
-    checked server-side; results are deterministic and auditable.
-  */
+  /* Drug–drug interaction checking on every cart change. */
   useEffect(() => {
     if (cart.length < 1) {
       setHasInteractions(false);
@@ -308,10 +363,11 @@ export const POS = ({
         }
       } catch {
         if (!cancelled) {
-          // Never block the sale on a failed check — surface it clearly.
           setHasInteractions(false);
           setAiWarnings([]);
-          toast.warning("Interaction check is temporarily unavailable. Pharmacist judgement required.");
+          toast.warning(
+            "Interaction check is temporarily unavailable. Pharmacist judgement required."
+          );
         }
       } finally {
         if (!cancelled) setAiLoading(false);
@@ -323,7 +379,43 @@ export const POS = ({
     return () => {
       cancelled = true;
     };
-  }, [cart]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cart.length]);
+
+  /* ── CART ACTIONS ─────────────────────────────────────────────────────── */
+
+  const buildCartItem = (med) => {
+    const rxRequired = med.prescription_type !== "OTC";
+
+    const base = {
+      ...med,
+      cart_key: getCartItemKey(med),
+      rx_required: rxRequired,
+      dose_per_admin: 1,
+      frequency_code: "BID",
+      duration_days: 7,
+      route_of_admin: "PO",
+    };
+
+    if (!rxRequired) {
+      // OTC — normal dispensing: default 1 strip worth of single doses.
+      return {
+        ...base,
+        quantity: Math.min(med.strip_size, Math.max(1, med.stock_on_hand)),
+        counseling_note: null,
+      };
+    }
+
+    // PRESCRIPTION / CONTROLLED — default clinical course, dispensing
+    // follows the calculation (never fewer strips than required).
+    const calculation = calculateDispensing(base);
+    return {
+      ...base,
+      strips: calculation.suggested_strips,
+      quantity: calculation.suggested_strips * calculation.strip_size,
+      counseling_note: generateCounseling(base),
+    };
+  };
 
   const addToCart = (medicine) => {
     const med = normalizeMedicine(medicine);
@@ -341,46 +433,37 @@ export const POS = ({
     setCart((current) => {
       const itemKey = getCartItemKey(med);
       const existingIndex = current.findIndex(
-        (item) => getCartItemKey(item) === itemKey,
+        (item) => getCartItemKey(item) === itemKey
       );
 
-      // Already in cart → increase quantity. Never duplicate, never replace.
+      // Already in cart → increase dispensing. Never duplicate or replace.
       if (existingIndex >= 0) {
         const updated = [...current];
         const existing = updated[existingIndex];
+        const step = existing.rx_required
+          ? existing.strip_size
+          : 1;
+        const proposedQty = numberOr(existing.quantity, step) + step;
 
-        if (Number(existing.quantity || 1) + 1 > Number(existing.stock_on_hand)) {
-          toast.warning(`Only ${existing.stock_on_hand} units of ${med.generic_name} are in stock.`);
+        if (proposedQty > Number(existing.stock_on_hand)) {
+          toast.warning(
+            `Only ${existing.stock_on_hand} single doses of ${med.generic_name} are in stock.`
+          );
           return current;
         }
 
         updated[existingIndex] = {
           ...existing,
-          quantity: Number(existing.quantity || 1) + 1,
+          quantity: proposedQty,
+          strips: existing.rx_required
+            ? Math.floor(proposedQty / existing.strip_size)
+            : existing.strips,
         };
-        toast.info(`${med.generic_name} quantity increased.`);
+        toast.info(`${med.generic_name} added again.`);
         return updated;
       }
 
-      const newItem = {
-        ...med,
-        cart_key: itemKey,
-        quantity: 1,
-        dose_per_admin: 1,
-        frequency_code: "BID",
-        duration_days: 7,
-        route_of_admin: "PO",
-        counseling_note: generateCounseling({
-          ...med,
-          dose_per_admin: 1,
-          frequency_code: "BID",
-          duration_days: 7,
-          route_of_admin: "PO",
-        }),
-        has_rx: false,
-      };
-
-      return [...current, newItem];
+      return [...current, buildCartItem(med)];
     });
 
     setSearchQuery("");
@@ -390,6 +473,7 @@ export const POS = ({
     setCart((current) => current.filter((_, i) => i !== index));
   };
 
+  /* OTC quantity stepper — single doses. */
   const updateQuantity = (index, value) => {
     const quantity = Math.floor(Number(value));
 
@@ -403,39 +487,84 @@ export const POS = ({
         return current;
       }
 
-      updated[index] = {
-        ...updated[index],
-        quantity,
-      };
-
+      updated[index] = { ...updated[index], quantity };
       return updated;
     });
   };
 
-  /* Price comes from inventory/batch pricing — cashiers cannot edit it. */
+  /* PRESCRIPTION dispensing stepper — WHOLE STRIPS. The calculated
+     required dose stays read-only; only dispensing is adjustable. */
+  const changeStrips = (index, delta) => {
+    setCart((current) => {
+      const updated = [...current];
+      const item = updated[index];
+      if (!item.rx_required) return current;
 
+      const stripSize = Math.max(1, Math.floor(numberOr(item.strip_size, 10)));
+      const maxStrips = Math.max(
+        1,
+        Math.floor(numberOr(item.stock_on_hand, 0) / stripSize)
+      );
+      const nextStrips = Math.min(
+        maxStrips,
+        Math.max(1, numberOr(item.strips, 1) + delta)
+      );
+
+      if (nextStrips === item.strips) {
+        if (delta > 0) {
+          toast.warning(
+            `Only ${item.stock_on_hand} single doses available (${maxStrips} full strip(s)).`
+          );
+        }
+        return current;
+      }
+
+      updated[index] = {
+        ...updated[index],
+        strips: nextStrips,
+        quantity: nextStrips * stripSize,
+      };
+      return updated;
+    });
+  };
+
+  /* Clinical inputs — editing these RE-CALCULATES the required dose and
+     auto-follows with dispensing unless the pharmacist chose it manually. */
   const updateRx = (index, field, value) => {
     setCart((current) => {
       const updated = [...current];
       const item = { ...updated[index] };
 
-      if (field === "dose_per_admin" || field === "duration_days") {
+      if (field === "dose_per_admin") {
         item[field] = Math.max(1, Math.floor(Number(value) || 1));
+      } else if (field === "duration_days") {
+        item[field] =
+          getFrequency(item.frequency_code).per_day === null
+            ? item[field]
+            : Math.max(1, Math.floor(Number(value) || 1));
       } else {
         item[field] = value;
       }
 
-      item.counseling_note = generateCounseling(item);
+      if (!item.note_manual) {
+        item.counseling_note = generateCounseling(item);
+      }
 
       const calculation = calculateDispensing(item);
 
-      /*
-        Required quantity is what the prescription calculates.
-        If packaging requires rounding, dispense_units represents the
-        actual stock quantity to be sold.
-      */
-      if (calculation.dispense_units <= item.stock_on_hand) {
-        item.quantity = calculation.dispense_units;
+      // Dispensing follows the calculation unless adjusted manually.
+      if (!item.strips_manual) {
+        const stripSize = Math.max(
+          1,
+          Math.floor(numberOr(item.strip_size, 10))
+        );
+        const maxStrips = Math.max(
+          1,
+          Math.floor(numberOr(item.stock_on_hand, 0) / stripSize)
+        );
+        const strips = Math.min(maxStrips, calculation.suggested_strips);
+        item.strips = strips;
+        item.quantity = strips * stripSize;
       }
 
       updated[index] = item;
@@ -443,120 +572,43 @@ export const POS = ({
     });
   };
 
-  const openDrawer = (index) => {
-    const item = cart[index];
-
-    setDrawerForm({
-      dose_per_admin: item.dose_per_admin || 1,
-      frequency_code: item.frequency_code || "BID",
-      duration_days: item.duration_days || 7,
-      route_of_admin: item.route_of_admin || "PO",
-      counseling_note:
-        item.counseling_note ||
-        generateCounseling({
-          ...item,
-          dose_per_admin: item.dose_per_admin || 1,
-          frequency_code: item.frequency_code || "BID",
-          duration_days: item.duration_days || 7,
-          route_of_admin: item.route_of_admin || "PO",
-        }),
-      package_capacity: item.package_capacity || item.strip_size || 10,
-    });
-
-    setDispensingDrawer({
-      open: true,
-      itemIndex: index,
-    });
-  };
-
-  const applyDrawer = () => {
-    if (dispensingDrawer.itemIndex === null) return;
-
-    const index = dispensingDrawer.itemIndex;
-    const currentItem = cart[index];
-
-    const item = {
-      ...currentItem,
-      ...drawerForm,
-      dose_per_admin: Math.max(1, numberOr(drawerForm.dose_per_admin, 1)),
-      duration_days: Math.max(1, numberOr(drawerForm.duration_days, 7)),
-      package_capacity: Math.max(1, numberOr(drawerForm.package_capacity, 10)),
-      strip_size: Math.max(1, numberOr(drawerForm.package_capacity, 10)),
-      has_rx: true,
-    };
-
-    item.counseling_note =
-      drawerForm.counseling_note || generateCounseling(item);
-
-    const calculation = calculateDispensing(item);
-
-    if (calculation.dispense_units > item.stock_on_hand) {
-      toast.warning(
-        `Required quantity is ${calculation.dispense_units}, but only ${item.stock_on_hand} units are available.`,
-      );
-      return;
-    }
-
+  const editCounselingNote = (index, text) => {
     setCart((current) => {
       const updated = [...current];
       updated[index] = {
-        ...item,
-        quantity: calculation.dispense_units,
+        ...updated[index],
+        counseling_note: text,
+        note_manual: true,
       };
       return updated;
     });
-
-    setDispensingDrawer({
-      open: false,
-      itemIndex: null,
-    });
   };
+
+  /* ── TOTALS & VALIDATION ──────────────────────────────────────────────── */
 
   const calculateTotal = useMemo(
-    () =>
-      cart
-        .reduce(
-          (sum, item) =>
-            sum + numberOr(item.current_price, 0) * numberOr(item.quantity, 0),
-          0,
-        )
-        .toFixed(2),
-    [cart],
+    () => cart.reduce((sum, item) => sum + lineTotalFor(item), 0),
+    [cart]
   );
-
-  const printReceipt = (options = {}) => {
-    const pharmacyName = options.pharmacyName || 'NET-PHARMA';
-    const now = new Date();
-    const rows = cart.map((it, i) => {
-      const calc = calculateDispensing(it);
-      return `<tr style="border-bottom:1px solid #eee"><td style="padding:8px 0"><strong>${i+1}. ${escapeHtml(it.generic_name)}</strong>${it.brand_name ? ' <span style="color:#666">('+escapeHtml(it.brand_name)+')</span>' : ''}<div style="font-size:12px;color:#666">${escapeHtml(it.strength || '')}</div></td><td style="padding:8px 0; text-align:right">${calc.dispense_units} units</td></tr>
-        <tr><td colspan="2" style="padding:4px 0 12px 0; font-size:12px; color:#333">Counseling: ${escapeHtml(it.counseling_note || '—')}</td></tr>`;
-    }).join('');
-
-    const total = numberOr(calculateTotal, 0);
-
-    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:20px} .card{max-width:680px;margin:0 auto;border-radius:12px;padding:20px;border:1px solid #e6eef7} h1{margin:0;font-size:20px} .meta{color:#64748b;font-size:13px;margin-top:6px} table{width:100%;border-collapse:collapse;margin-top:16px} td{vertical-align:top} .total{display:flex;justify-content:space-between;padding-top:12px;border-top:1px solid #e6eef7;margin-top:12px;font-weight:800;font-size:16px}</style></head><body><div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div><h1>${escapeHtml(pharmacyName)}</h1><div class="meta">Receipt — ${now.toLocaleString()}</div></div><div style="text-align:right;color:#64748b;font-size:12px">Powered by NET-PHARMA</div></div><div style="margin-top:12px;color:#334155">Items</div><table>${rows}</table><div class="total"><div>Total</div><div>ETB ${Number(total).toFixed(2)}</div></div><div style="margin-top:18px;font-size:13px;color:#475569">Thank you for your purchase. For medicine counselling please follow instructions above or contact your pharmacist.</div></div><script>function printAndClose(){window.print();}</script></body></html>`;
-
-    const w = window.open('', '_blank');
-    if (!w) { toast.error('Pop-up blocked. Allow pop-ups for printing.'); return; }
-    w.document.write(html);
-    w.document.close();
-    w.onload = () => { w.focus(); w.print(); };
-  };
 
   const selectedItemCount = cart.length;
 
   const hasCriticalInteractions = useMemo(
     () => aiWarnings.filter((w) => w.severity === 1).length,
-    [aiWarnings],
+    [aiWarnings]
+  );
+
+  const hasControlled = useMemo(
+    () => cart.some((item) => item.prescription_type === "CONTROLLED"),
+    [cart]
   );
 
   const stockProblems = useMemo(
     () =>
       cart.filter(
-        (item) => numberOr(item.quantity, 0) > numberOr(item.stock_on_hand, 0),
+        (item) => numberOr(item.quantity, 0) > numberOr(item.stock_on_hand, 0)
       ),
-    [cart],
+    [cart]
   );
 
   const handleCheckout = async () => {
@@ -575,9 +627,10 @@ export const POS = ({
       return;
     }
 
-    // Only CRITICAL interactions require an explicit pharmacist override reason.
+    // Critical interactions OR controlled medicines require an explicit
+    // documented reason before the backend will accept the sale.
     const criticalCount = aiWarnings.filter((w) => w.severity === 1).length;
-    if (criticalCount > 0) {
+    if (criticalCount > 0 || hasControlled) {
       setShowInteractionConfirm(true);
       return;
     }
@@ -587,45 +640,65 @@ export const POS = ({
 
   const proceedCheckout = async () => {
     const criticalCount = aiWarnings.filter((w) => w.severity === 1).length;
-    if (criticalCount > 0 && !overrideReason.trim()) {
-      toast.error("A pharmacist review reason is required for critical interactions.");
+
+    if ((criticalCount > 0 || hasControlled) && !overrideReason.trim()) {
+      toast.error(
+        hasControlled
+          ? "An authorization/prescription reference is required for controlled medicines."
+          : "A pharmacist review reason is required for critical interactions."
+      );
       return;
     }
 
     setShowInteractionConfirm(false);
 
+    const operation_id = ensureOperationId();
+
+    // Snapshot for receipt printing BEFORE the cart is cleared.
+    const saleSnapshot = {
+      items: cart.map((item) => ({
+        name: `${item.generic_name}${item.brand_name ? ` (${item.brand_name})` : ""}`,
+        strength: item.strength,
+        rx_type: item.prescription_type,
+        dispense_units: numberOr(item.quantity, 0),
+        strips: item.rx_required ? item.strips : null,
+        strip_size: item.rx_required ? item.strip_size : null,
+        counseling_note: item.rx_required ? item.counseling_note : null,
+      })),
+    };
+
     try {
       const payload = {
-        user_id: user?.id || 1,
+        // NOTE: no user_id — identity comes from the authenticated token.
+        operation_id,
         payment_method: "CASH",
         override_reason: overrideReason.trim() || null,
 
-        /*
-          Every selected medicine remains an individual sale line.
-          The backend uses the medicine/batch inventory relation
-          to deduct stock and write the stock/bin-card transaction.
-        */
         items: cart.map((item) => {
           const calculation = calculateDispensing(item);
+          const stripSize = Math.max(
+            1,
+            Math.floor(numberOr(item.strip_size, 10))
+          );
 
           return {
             medicine_id: item.medicine_id,
             batch_id: item.batch_id || null,
             // Inventory stock is counted as SINGLE doses.
-            quantity: item.quantity,
-            strip_size: item.strip_size || 10,
-            strip_quantity: Math.ceil(
-              item.quantity / Math.max(1, item.strip_size || 10),
-            ),
+            quantity: numberOr(item.quantity, 0),
+            strip_size: stripSize,
+            strip_quantity: item.rx_required ? item.strips : null,
 
-            required_units: calculation.required_units,
-            dispense_units: calculation.dispense_units,
+            required_units: item.rx_required
+              ? calculation.required_units
+              : null,
+            dispense_units: numberOr(item.quantity, 0),
 
-            dose_per_admin: item.has_rx ? item.dose_per_admin : null,
-            frequency_code: item.has_rx ? item.frequency_code : null,
-            duration_days: item.has_rx ? item.duration_days : null,
-            route_of_admin: item.has_rx ? item.route_of_admin : null,
-            counseling_note: item.has_rx ? item.counseling_note : null,
+            dose_per_admin: item.rx_required ? item.dose_per_admin : null,
+            frequency_code: item.rx_required ? item.frequency_code : null,
+            duration_days: item.rx_required ? item.duration_days : null,
+            route_of_admin: item.rx_required ? item.route_of_admin : null,
+            counseling_note: item.rx_required ? item.counseling_note : null,
           };
         }),
       };
@@ -635,40 +708,80 @@ export const POS = ({
         successMsg: "Sale completed successfully!",
       });
 
-      setFinalSaleId(response.data?.sale_id);
-      setFinalTotal(
-        numberOr(response.data?.total_amount, Number(calculateTotal)),
+      const sale_id = response.data?.sale_id;
+      const total = numberOr(
+        response.data?.total_amount,
+        Number(calculateTotal.toFixed(2))
       );
-      setCheckoutSuccess(true);
 
+      setSaleResult({
+        sale_id,
+        total,
+        operation_id,
+        items: saleSnapshot.items,
+      });
+      setShowPrintPrompt(true);
+
+      // A NEW checkout after this success must be a NEW operation.
+      operationIdRef.current = null;
       setCart([]);
       setOverrideReason("");
 
-      setTimeout(() => {
-        setCheckoutSuccess(false);
-        setFinalSaleId(null);
-        setFinalTotal(0);
-      }, 5000);
+      refreshStock({ silent: true });
     } catch (error) {
-      toast.error(
-        `Failed to process checkout: ${
-          error.response?.data?.error || error.message || "Unknown error"
-        }`,
-      );
+      const message =
+        error.response?.data?.error || error.message || "Unknown error";
+      toast.error(`Failed to process checkout: ${message}`);
+      // Keep the SAME operation_id so an immediate retry after a network
+      // failure cannot create a duplicate sale.
     }
   };
 
-  const drawerItem =
-    dispensingDrawer.open && dispensingDrawer.itemIndex !== null
-      ? cart[dispensingDrawer.itemIndex]
-      : null;
+  const closePrintPrompt = () => {
+    setShowPrintPrompt(false);
+    setSaleResult(null);
+  };
 
-  const drawerCalculation = drawerItem
-    ? calculateDispensing({
-        ...drawerItem,
-        ...drawerForm,
-      })
-    : null;
+  const printReceipt = (sale) => {
+    if (!sale) return;
+    const pharmacyName = "NET-PHARMA";
+    const now = new Date();
+
+    const rows = sale.items
+      .map(
+        (it, i) => `
+      <tr style="border-bottom:1px solid #eee">
+        <td style="padding:8px 0">
+          <strong>${i + 1}. ${escapeHtml(it.name)}</strong>
+          <div style="font-size:12px;color:#666">${escapeHtml(it.strength || "")}${it.rx_type !== "OTC" ? ` · ${escapeHtml(it.rx_type)}` : ""}</div>
+          ${
+            it.strips
+              ? `<div style="font-size:12px;color:#333">${it.strips} strip(s) × ${it.strip_size} = ${it.dispense_units} single doses</div>`
+              : `<div style="font-size:12px;color:#333">${it.dispense_units} single dose(s)</div>`
+          }
+        </td>
+      </tr>
+      ${
+        it.counseling_note
+          ? `<tr><td style="padding:0 0 12px 0;font-size:12px;color:#333">Counseling: ${escapeHtml(it.counseling_note)}</td></tr>`
+          : ""
+      }`
+      )
+      .join("");
+
+    const html = `<!doctype html><html><head><meta charset="utf-8"><title>Receipt #${escapeHtml(sale.sale_id)}</title><meta name="viewport" content="width=device-width,initial-scale=1"><style>body{font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;color:#0f172a;padding:20px}.card{max-width:680px;margin:0 auto;border-radius:12px;padding:20px;border:1px solid #e6eef7}h1{margin:0;font-size:20px}.meta{color:#64748b;font-size:13px;margin-top:6px}table{width:100%;border-collapse:collapse;margin-top:16px}td{vertical-align:top}.total{display:flex;justify-content:space-between;padding-top:12px;border-top:1px solid #e6eef7;margin-top:12px;font-weight:800;font-size:16px}.op{margin-top:14px;padding:10px;background:#f8fafc;border:1px dashed #cbd5e1;border-radius:8px;font-size:12px;color:#334155;word-break:break-all}</style></head><body><div class="card"><div style="display:flex;justify-content:space-between;align-items:center"><div><h1>${escapeHtml(pharmacyName)}</h1><div class="meta">Receipt #${escapeHtml(sale.sale_id)} — ${now.toLocaleString()}</div></div><div style="text-align:right;color:#64748b;font-size:12px">Powered by NET-PHARMA</div></div><div class="op"><strong>Operation ID:</strong> ${escapeHtml(sale.operation_id || "-")}</div><div style="margin-top:12px;color:#334155">Items</div><table>${rows}</table><div class="total"><div>Total</div><div>ETB ${Number(sale.total).toFixed(2)}</div></div><div style="margin-top:18px;font-size:13px;color:#475569">Thank you for your purchase. For medicine counselling please follow instructions above or contact your pharmacist.</div></div><body onload="window.print()"></body></html>`;
+
+    const w = window.open("", "_blank");
+    if (!w) {
+      toast.error("Pop-up blocked. Allow pop-ups for printing.");
+      return;
+    }
+    w.document.write(html);
+    w.document.close();
+    w.focus();
+  };
+
+  /* ── SEARCH ───────────────────────────────────────────────────────────── */
 
   const searchResults = useMemo(() => {
     const query = searchQuery.trim().toLowerCase();
@@ -687,7 +800,17 @@ export const POS = ({
       .slice(0, 20);
   }, [searchQuery, stockList]);
 
-  const checkoutBlocked = cart.length === 0 || aiLoading || stockProblems.length > 0;
+  const checkoutBlocked =
+    cart.length === 0 || aiLoading || stockProblems.length > 0;
+
+  const badgeClass = (type) =>
+    type === "CONTROLLED"
+      ? "rx-badge controlled"
+      : type === "PRESCRIPTION"
+        ? "rx-badge prescription"
+        : "rx-badge otc";
+
+  /* ════════════════════════ RENDER ════════════════════════ */
 
   return (
     <div className="pos-page">
@@ -695,21 +818,28 @@ export const POS = ({
         <div className="page-title-group">
           <h1>Point of Sale</h1>
           <p>
-            Scan or search a medicine, add multiple medicines, check
-            interactions, and complete the sale.
+            Scan or search a medicine — OTC, prescription and controlled
+            workflows apply automatically.
           </p>
         </div>
-      </div>
-
-      {checkoutSuccess && (
-        <div className="checkout-success slide-up" role="status">
-          <CheckCircle2 size={30} />
-          <div>
-            <strong>Sale Completed Successfully</strong>
-            <p>Receipt #{finalSaleId || "—"} · Total: ETB {finalTotal.toFixed(2)}</p>
-          </div>
+        <div className="pos-sync-state" title={lastUpdated ? `Last updated ${lastUpdated.toLocaleTimeString()}` : undefined}>
+          {stockLoading ? (
+            <>
+              <RefreshCw size={13} className="spin" /> Updating stock…
+            </>
+          ) : stockError ? (
+            <button
+              type="button"
+              className="pos-retry-btn"
+              onClick={() => refreshStock()}
+            >
+              <RefreshCw size={13} /> Unable to refresh stock — Retry
+            </button>
+          ) : (
+            lastUpdated && <>Live · {lastUpdated.toLocaleTimeString()}</>
+          )}
         </div>
-      )}
+      </div>
 
       <div className="pos-layout">
         {/* ══ LEFT · SEARCH + CART ══ */}
@@ -719,7 +849,11 @@ export const POS = ({
               <Search size={17} />
               <input
                 type="text"
-                placeholder={stockError ? "Inventory could not be loaded — retry from the Inventory page" : "Search generic, brand, strength or batch…"}
+                placeholder={
+                  stockError
+                    ? "Inventory unavailable — press Retry to reconnect"
+                    : "Search generic, brand, strength or batch…"
+                }
                 disabled={stockLoading || stockError}
                 value={searchQuery}
                 onChange={(event) => setSearchQuery(event.target.value)}
@@ -748,6 +882,9 @@ export const POS = ({
                           {medicine.batch_number ? ` · Batch ${medicine.batch_number}` : ""}
                         </small>
                       </span>
+                      <span className={`pos-result-type ${badgeClass(medicine.prescription_type)}`}>
+                        {medicine.prescription_type}
+                      </span>
                       <strong className="pos-result-price">
                         ETB {medicine.current_price.toFixed(2)} / strip
                       </strong>
@@ -758,7 +895,9 @@ export const POS = ({
 
               {searchQuery.trim() && searchResults.length === 0 && !stockLoading && (
                 <div className="pos-results fade-in">
-                  <div className="pos-no-result">No medicine matches “{searchQuery}” in current stock.</div>
+                  <div className="pos-no-result">
+                    No medicine matches “{searchQuery}” in current stock.
+                  </div>
                 </div>
               )}
             </div>
@@ -781,191 +920,85 @@ export const POS = ({
             </div>
           )}
 
-          <div className="table-container">
-            <div className="table-scroll-wrap">
-              <table className="custom-table pos-table">
-                <thead>
-                  <tr>
-                    <th>Drug</th>
-                    <th>Unit Price</th>
-                    <th>Qty</th>
-                    <th>Total</th>
-                    <th style={{ textAlign: "right" }}>Actions</th>
-                  </tr>
-                </thead>
+          {/* ── ITEM CARDS (auto workflow per prescription type) ── */}
+          <div className="pos-items">
+            {cart.length === 0 && !stockError && (
+              <EmptyState
+                icon={<Pill size={28} />}
+                title="No medicines selected yet"
+                description="Search or scan a medicine from inventory to start this sale."
+              />
+            )}
 
-                <tbody>
-                  {cart.length === 0 ? (
-                    <tr>
-                      <td colSpan="5" style={{ padding: 0 }}>
-                        <EmptyState
-                          icon={<Pill size={28} />}
-                          title="No medicines selected yet"
-                          description="Search or scan a medicine from inventory to start this sale."
-                        />
-                      </td>
-                    </tr>
-                  ) : (
-                    cart.map((item, index) => {
-                      const calculation = calculateDispensing(item);
-                      const lineTotal =
-                        numberOr(item.current_price, 0) *
-                        numberOr(item.quantity, 0);
+            {stockError && cart.length === 0 && (
+              <EmptyState
+                icon={<AlertTriangle size={28} />}
+                title="Unable to load inventory"
+                description="Check the connection to the server, then retry."
+              />
+            )}
 
-                      return (
-                        <tr
-                          key={
-                            item.cart_key ||
-                            `${item.medicine_id}-${item.batch_id || "no-batch"}`
-                          }
-                        >
-                          <td className="cell-truncate">
-                            <strong className="td-strong">{item.generic_name}</strong>
+            {cart.map((item, index) => {
+              const calculation = calculateDispensing(item);
+              const lineTotal = lineTotalFor(item);
+              const stripSize = calculation.strip_size;
+              const maxStrips = Math.max(
+                1,
+                Math.floor(numberOr(item.stock_on_hand, 0) / stripSize)
+              );
 
-                            {item.brand_name && (
-                              <small className="muted-line">{item.brand_name}</small>
-                            )}
+              return (
+                <article key={item.cart_key || getCartItemKey(item)} className="pos-item-card">
+                  {/* header */}
+                  <header className="pos-item-head">
+                    <div className="pos-item-title">
+                      <strong>
+                        {item.generic_name}
+                        {item.brand_name ? ` — ${item.brand_name}` : ""}
+                      </strong>
+                      <span className="muted-line">
+                        {[
+                          item.strength,
+                          item.batch_number ? `Batch: ${item.batch_number}` : null,
+                          item.expiry_date ? `Exp: ${String(item.expiry_date).slice(0, 10)}` : null,
+                        ]
+                          .filter(Boolean)
+                          .join(" · ")}
+                      </span>
+                    </div>
+                    <div className="pos-item-head-right">
+                      <span className={badgeClass(item.prescription_type)}>
+                        {item.prescription_type}
+                      </span>
+                      <button
+                        type="button"
+                        className="icon-btn remove"
+                        onClick={() => removeFromCart(index)}
+                        aria-label={`Remove ${item.generic_name}`}
+                      >
+                        <Trash2 size={15} />
+                      </button>
+                    </div>
+                  </header>
 
-                            <small className="muted-line">
-                              {item.strength}
-                              {item.batch_number ? ` · Batch ${item.batch_number}` : ""}
-                              {item.expiry_date ? ` · Exp ${String(item.expiry_date).slice(0, 10)}` : ""}
-                            </small>
-
-                            {item.has_rx && (
-                              <div className="rx-panel">
-                                <div className="rx-grid">
-                                  <label className="rx-field">
-                                    Dose per admin
-                                    <input
-                                      type="number"
-                                      min="1"
-                                      value={item.dose_per_admin}
-                                      onChange={(event) =>
-                                        updateRx(index, "dose_per_admin", event.target.value)
-                                      }
-                                    />
-                                  </label>
-
-                                  <label className="rx-field">
-                                    Frequency
-                                    <select
-                                      value={item.frequency_code}
-                                      onChange={(event) =>
-                                        updateRx(index, "frequency_code", event.target.value)
-                                      }
-                                    >
-                                      {FREQUENCIES.map((frequency) => (
-                                        <option key={frequency.code} value={frequency.code}>
-                                          {frequency.code}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </label>
-
-                                  <label className="rx-field">
-                                    Duration (days)
-                                    <input
-                                      type="number"
-                                      min="1"
-                                      value={item.duration_days}
-                                      disabled={
-                                        getFrequency(item.frequency_code).per_day === null
-                                      }
-                                      onChange={(event) =>
-                                        updateRx(index, "duration_days", event.target.value)
-                                      }
-                                    />
-                                  </label>
-
-                                  <label className="rx-field">
-                                    Route
-                                    <select
-                                      value={item.route_of_admin}
-                                      onChange={(event) =>
-                                        updateRx(index, "route_of_admin", event.target.value)
-                                      }
-                                    >
-                                      {ROUTES.map((route) => (
-                                        <option key={route.code} value={route.code}>
-                                          {route.code}
-                                        </option>
-                                      ))}
-                                    </select>
-                                  </label>
-                                </div>
-
-                                <div className="rx-calc">
-                                  <div className="rx-calc-head">
-                                    <Calculator size={15} />
-                                    Calculation
-                                  </div>
-                                  <div className="rx-formula">Formula: {calculation.formula}</div>
-
-                                  <div className="rx-strip-grid">
-                                    <div className="rx-strip-card">
-                                      <span>Single Dose</span>
-                                      <strong>1 tablet/capsule</strong>
-                                      <small>ETB {calculation.single_unit_price.toFixed(2)}</small>
-                                    </div>
-                                    <div className="rx-strip-card">
-                                      <span>1 Strip</span>
-                                      <strong>{calculation.strip_size} single doses</strong>
-                                      <small>ETB {calculation.strip_price.toFixed(2)}</small>
-                                    </div>
-                                  </div>
-
-                                  <div className="rx-required">
-                                    Required: {calculation.required_units} single doses
-                                  </div>
-                                  <div className="rx-dispense">
-                                    Dispense: {calculation.strips} strip(s) ×{" "}
-                                    {calculation.strip_size} = {calculation.dispense_units} single doses
-                                  </div>
-                                  <div className="rx-price">
-                                    Price: {calculation.strips} strip(s) × ETB{" "}
-                                    {calculation.strip_price.toFixed(2)} = ETB{" "}
-                                    {calculation.total_price.toFixed(2)}
-                                  </div>
-                                </div>
-
-                                <div className="rx-counseling">
-                                  <div className="rx-calc-head neutral">
-                                    <MessageSquareText size={15} />
-                                    Counseling Note
-                                  </div>
-                                  <textarea
-                                    rows="2"
-                                    value={item.counseling_note}
-                                    onChange={(event) =>
-                                      setCart((current) => {
-                                        const updated = [...current];
-                                        updated[index] = {
-                                          ...updated[index],
-                                          counseling_note: event.target.value,
-                                        };
-                                        return updated;
-                                      })
-                                    }
-                                  />
-                                </div>
-                              </div>
-                            )}
-                          </td>
-
-                          <td>
-                            {/* Unit price is fixed by inventory — display only */}
-                            <span
-                              className="price-fixed"
-                              title="Unit price is determined by inventory and cannot be edited in POS"
+                  {!item.rx_required ? (
+                    /* ── OTC: simple quantity control ── */
+                    <div className="pos-item-body otc">
+                      <div className="otc-row">
+                        <label className="otc-qty-label">
+                          Quantity (single doses)
+                          <div className="stepper">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                numberOr(item.quantity, 1) > 1 &&
+                                updateQuantity(index, numberOr(item.quantity, 1) - 1)
+                              }
+                              aria-label="Decrease quantity"
                             >
-                              ETB {numberOr(item.current_price, 0).toFixed(2)}
-                            </span>
-                          </td>
-
-                          <td>
+                              −
+                            </button>
                             <input
-                              className="qty-input"
                               type="number"
                               min="1"
                               max={item.stock_on_hand}
@@ -975,41 +1008,174 @@ export const POS = ({
                               }
                               aria-label={`Quantity for ${item.generic_name}`}
                             />
-                            <small className="muted-line">Stock: {item.stock_on_hand}</small>
-                          </td>
-
-                          <td>
-                            <strong className="td-strong">ETB {lineTotal.toFixed(2)}</strong>
-                          </td>
-
-                          <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
                             <button
                               type="button"
-                              className="icon-btn"
-                              data-tip="Prescription / dispensing"
-                              onClick={() => openDrawer(index)}
-                              aria-label="Open prescription dispensing"
+                              onClick={() =>
+                                updateQuantity(index, numberOr(item.quantity, 1) + 1)
+                              }
+                              aria-label="Increase quantity"
                             >
-                              <Stethoscope size={16} />
+                              +
                             </button>
+                          </div>
+                        </label>
 
-                            <button
-                              type="button"
-                              className="icon-btn remove"
-                              data-tip="Remove item"
-                              onClick={() => removeFromCart(index)}
-                              aria-label={`Remove ${item.generic_name}`}
+                        <div className="otc-pricing">
+                          <span>
+                            ETB{" "}
+                            {(numberOr(item.current_price, 0) / stripSize).toFixed(2)} /
+                            dose
+                          </span>
+                          <small>Stock: {item.stock_on_hand}</small>
+                        </div>
+                      </div>
+                    </div>
+                  ) : (
+                    /* ── PRESCRIPTION / CONTROLLED: automatic workflow ── */
+                    <>
+                      <section className="pos-item-section">
+                        <h4>Prescription</h4>
+                        <div className="rx-grid">
+                          <label className="rx-field">
+                            Dose
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.dose_per_admin}
+                              onChange={(event) =>
+                                updateRx(index, "dose_per_admin", event.target.value)
+                              }
+                            />
+                          </label>
+
+                          <label className="rx-field">
+                            Frequency
+                            <select
+                              value={item.frequency_code}
+                              onChange={(event) =>
+                                updateRx(index, "frequency_code", event.target.value)
+                              }
                             >
-                              <Trash2 size={16} />
-                            </button>
-                          </td>
-                        </tr>
-                      );
-                    })
+                              {FREQUENCIES.map((frequency) => (
+                                <option key={frequency.code} value={frequency.code}>
+                                  {frequency.code}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+
+                          <label className="rx-field">
+                            Duration (days)
+                            <input
+                              type="number"
+                              min="1"
+                              value={item.duration_days}
+                              disabled={
+                                getFrequency(item.frequency_code).per_day === null
+                              }
+                              onChange={(event) =>
+                                updateRx(index, "duration_days", event.target.value)
+                              }
+                            />
+                          </label>
+
+                          <label className="rx-field">
+                            Route
+                            <select
+                              value={item.route_of_admin}
+                              onChange={(event) =>
+                                updateRx(index, "route_of_admin", event.target.value)
+                              }
+                            >
+                              {ROUTES.map((route) => (
+                                <option key={route.code} value={route.code}>
+                                  {route.code}
+                                </option>
+                              ))}
+                            </select>
+                          </label>
+                        </div>
+                      </section>
+
+                      <section className="pos-item-section calc">
+                        <h4>
+                          <Calculator size={14} /> Calculation
+                        </h4>
+
+                        <div className="rx-formula">{calculation.formula}</div>
+
+                        <div className="calc-grid">
+                          <div className="calc-box required">
+                            <span>
+                              Required dose <Lock size={11} aria-label="read-only" />
+                            </span>
+                            <strong>{calculation.required_units} single doses</strong>
+                            <small>calculated automatically — read-only</small>
+                          </div>
+
+                          <div className="calc-box">
+                            <span>Strip size</span>
+                            <strong>{stripSize} single doses</strong>
+                            <small>ETB {calculation.strip_price.toFixed(2)} / strip</small>
+                          </div>
+
+                          <div className="calc-box dispensing">
+                            <span>Dispensing</span>
+                            <div className="stepper compact">
+                              <button
+                                type="button"
+                                onClick={() => changeStrips(index, -1)}
+                                disabled={numberOr(item.strips, 1) <= 1}
+                                aria-label="Decrease strips"
+                              >
+                                −
+                              </button>
+                              <strong>{numberOr(item.strips, 1)} strip(s)</strong>
+                              <button
+                                type="button"
+                                onClick={() => changeStrips(index, 1)}
+                                disabled={numberOr(item.strips, 1) >= maxStrips}
+                                aria-label="Increase strips"
+                              >
+                                +
+                              </button>
+                            </div>
+                            <small>
+                              Actual: {numberOr(item.quantity, 0)} single doses · adjustable
+                            </small>
+                          </div>
+                        </div>
+
+                        <div className="calc-price">
+                          Price: {numberOr(item.strips, 1)} strip(s) × ETB{" "}
+                          {calculation.strip_price.toFixed(2)} = ETB{" "}
+                          {lineTotal.toFixed(2)}
+                        </div>
+                      </section>
+
+                      <section className="pos-item-section counseling">
+                        <h4>
+                          <MessageSquareText size={14} /> Counseling Note
+                        </h4>
+                        <textarea
+                          rows="3"
+                          value={item.counseling_note || ""}
+                          onChange={(event) =>
+                            editCounselingNote(index, event.target.value)
+                          }
+                          placeholder="Counselling guidance shown to the patient…"
+                        />
+                      </section>
+                    </>
                   )}
-                </tbody>
-              </table>
-            </div>
+
+                  <footer className="pos-item-foot">
+                    <span>Line total</span>
+                    <strong>ETB {lineTotal.toFixed(2)}</strong>
+                  </footer>
+                </article>
+              );
+            })}
           </div>
         </section>
 
@@ -1018,7 +1184,7 @@ export const POS = ({
           <h3 className="pos-summary-title">Order Summary</h3>
 
           {aiWarnings.length > 0 && (
-            <div className={`interaction-box ${hasCriticalInteractions ? 'danger' : 'warn'}`}>
+            <div className={`interaction-box ${hasCriticalInteractions ? "danger" : "warn"}`}>
               <div className="interaction-head">
                 {hasCriticalInteractions ? (
                   <AlertTriangle size={18} />
@@ -1029,28 +1195,37 @@ export const POS = ({
                   {aiLoading
                     ? "Checking interactions…"
                     : hasCriticalInteractions
-                      ? `${hasCriticalInteractions} critical interaction${hasCriticalInteractions > 1 ? 's' : ''}`
+                      ? `${hasCriticalInteractions} critical interaction${hasCriticalInteractions > 1 ? "s" : ""}`
                       : "Interaction Notice"}
                 </strong>
               </div>
 
-              {!aiLoading && aiWarnings.slice(0, 2).map((warning) => (
-                <div key={warning.id || warning.drugs?.join('|')} className="interaction-warning">
-                  <span className={`badge ${warning.severity === 1 ? 'badge-danger' : 'badge-warning'}`}>
-                    {warning.title}
-                  </span>
-                  <strong>{warning.drugs?.join(' + ')}</strong>
-                  <p>{warning.clinical_effect || warning.recommended_action}</p>
-                </div>
-              ))}
+              {!aiLoading &&
+                aiWarnings.slice(0, 2).map((warning) => (
+                  <div
+                    key={warning.id || warning.drugs?.join("|")}
+                    className="interaction-warning"
+                  >
+                    <span className={`badge ${warning.severity === 1 ? "badge-danger" : "badge-warning"}`}>
+                      {warning.title}
+                    </span>
+                    <strong>{warning.drugs?.join(" + ")}</strong>
+                    <p>{warning.clinical_effect || warning.recommended_action}</p>
+                  </div>
+                ))}
               {!aiLoading && aiWarnings.length > 2 && (
-                <p className="muted-line" style={{ marginTop: '0.5rem' }}>
+                <p className="muted-line" style={{ marginTop: "0.5rem" }}>
                   +{aiWarnings.length - 2} more interaction notice(s)
                 </p>
               )}
 
               {!aiLoading && (
-                <button type="button" className="btn btn-secondary btn-sm" style={{ marginTop: '0.6rem' }} onClick={() => setShowDetails(true)}>
+                <button
+                  type="button"
+                  className="btn btn-secondary btn-sm"
+                  style={{ marginTop: "0.6rem" }}
+                  onClick={() => setShowDetails(true)}
+                >
                   View Details
                 </button>
               )}
@@ -1064,7 +1239,9 @@ export const POS = ({
 
           <div className="summary-total">
             <span>Total</span>
-            <span>ETB {calculateTotal}</span>
+            <span className="summary-total-value">
+              ETB {calculateTotal.toFixed(2)}
+            </span>
           </div>
 
           {stockProblems.length > 0 && (
@@ -1083,224 +1260,77 @@ export const POS = ({
             <ShoppingCart size={19} />
             {aiLoading ? "Checking Drugs…" : "Checkout & Pay"}
           </button>
-
-          <button
-            type="button"
-            onClick={() => printReceipt()}
-            disabled={cart.length === 0}
-            className="btn btn-secondary print-btn"
-          >
-            <Printer size={16} />
-            Print Receipt
-          </button>
         </aside>
       </div>
 
-      {dispensingDrawer.open && (
-        <>
-          <div
-            className="drawer-backdrop"
-            onClick={() => setDispensingDrawer({ open: false, itemIndex: null })}
-          />
-
-          <div className="drawer-panel slide-in-right" role="dialog" aria-modal="true" aria-label="Prescription dispensing">
-            <div className="drawer-header">
-              <div>
-                <strong>Prescription / Dispensing</strong>
-                <div className="muted-line">
-                  {drawerItem?.generic_name} {drawerItem?.strength}
-                </div>
-              </div>
-
-              <button
-                type="button"
-                className="modal-close-btn"
-                onClick={() => setDispensingDrawer({ open: false, itemIndex: null })}
-                aria-label="Close dispensing panel"
-              >
-                <X size={18} />
-              </button>
-            </div>
-
-            <div className="drawer-body">
-              <label className="form-group">
-                Dose per admin
-                <input
-                  className="form-control"
-                  type="number"
-                  min="1"
-                  value={drawerForm.dose_per_admin}
-                  onChange={(event) =>
-                    setDrawerForm((current) => ({
-                      ...current,
-                      dose_per_admin: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-
-              <label className="form-group">
-                Frequency
-                <select
-                  className="form-control"
-                  value={drawerForm.frequency_code}
-                  onChange={(event) =>
-                    setDrawerForm((current) => ({
-                      ...current,
-                      frequency_code: event.target.value,
-                    }))
-                  }
-                >
-                  {FREQUENCIES.map((frequency) => (
-                    <option key={frequency.code} value={frequency.code}>
-                      {frequency.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <label className="form-group">
-                Duration (days)
-                <input
-                  className="form-control"
-                  type="number"
-                  min="1"
-                  value={drawerForm.duration_days}
-                  disabled={
-                    getFrequency(drawerForm.frequency_code).per_day === null
-                  }
-                  onChange={(event) =>
-                    setDrawerForm((current) => ({
-                      ...current,
-                      duration_days: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-
-              <label className="form-group">
-                Strip Size
-                <div className="strip-row">
-                  <input
-                    className="form-control"
-                    type="number"
-                    min="1"
-                    value={drawerForm.package_capacity || 10}
-                    onChange={(event) =>
-                      setDrawerForm((current) => ({
-                        ...current,
-                        package_capacity: Math.max(
-                          1,
-                          Math.floor(Number(event.target.value) || 10),
-                        ),
-                      }))
-                    }
-                  />
-                  <span className="form-hint">single doses / strip</span>
-                </div>
-                <small className="form-hint">Example: 10 tablets = 1 strip</small>
-                {drawerCalculation && (
-                  <div className="strip-preview">
-                    Strips required: {drawerCalculation.strips} strip(s) —{" "}
-                    {drawerCalculation.dispense_units} units
-                  </div>
-                )}
-              </label>
-
-              <label className="form-group">
-                Route
-                <select
-                  className="form-control"
-                  value={drawerForm.route_of_admin}
-                  onChange={(event) =>
-                    setDrawerForm((current) => ({
-                      ...current,
-                      route_of_admin: event.target.value,
-                    }))
-                  }
-                >
-                  {ROUTES.map((route) => (
-                    <option key={route.code} value={route.code}>
-                      {route.label}
-                    </option>
-                  ))}
-                </select>
-              </label>
-
-              <div className="drawer-calc">
-                <h4>Calculation</h4>
-                {drawerCalculation && (
-                  <>
-                    <div className="rx-formula">Formula: {drawerCalculation.formula}</div>
-                    <div className="rx-required" style={{ marginTop: '0.5rem' }}>
-                      Required: {drawerCalculation.required_units} units
-                    </div>
-                    <div className="rx-price" style={{ marginTop: '0.35rem' }}>
-                      Price: {drawerCalculation.strips} strip(s) × ETB{" "}
-                      {drawerCalculation.strip_price.toFixed(2)} = ETB{" "}
-                      {drawerCalculation.total_price.toFixed(2)}
-                    </div>
-                  </>
-                )}
-              </div>
-
-              <label className="form-group">
-                Counseling Note
-                <textarea
-                  className="form-control"
-                  rows="5"
-                  value={drawerForm.counseling_note}
-                  onChange={(event) =>
-                    setDrawerForm((current) => ({
-                      ...current,
-                      counseling_note: event.target.value,
-                    }))
-                  }
-                />
-              </label>
-            </div>
-
-            <div className="drawer-footer">
-              <button type="button" className="btn-scan" onClick={applyDrawer} style={{ width: '100%' }}>
-                Apply to POS
-              </button>
-            </div>
-          </div>
-        </>
-      )}
-
+      {/* ══ CHECKOUT CONFIRMATION (critical interactions / controlled meds) ══ */}
       {showInteractionConfirm && (
         <div className="modal-overlay" style={{ zIndex: 1100 }}>
-          <div className="modal-card" style={{ maxWidth: '520px' }}>
-            <div className="interaction-confirm-head">
-              <AlertTriangle size={28} />
-              <h3>Critical Interaction — Pharmacist Review Required</h3>
+          <div className="modal-card" style={{ maxWidth: "520px" }}>
+            <div className={`interaction-confirm-head ${hasControlled && hasCriticalInteractions === 0 ? "controlled" : ""}`}>
+              {hasControlled ? <ShieldCheck size={28} /> : <AlertTriangle size={28} />}
+              <h3>
+                {hasControlled && hasCriticalInteractions > 0
+                  ? "Review Required Before Dispensing"
+                  : hasControlled
+                    ? "Controlled Medicine — Authorization Required"
+                    : "Critical Interaction — Pharmacist Review Required"}
+              </h3>
             </div>
 
-            <p className="muted-line" style={{ lineHeight: 1.6 }}>
-              These medicines have a potentially serious interaction. Pharmacist
-              review is required before dispensing.
-            </p>
-
-            <div className="confirm-warnings">
-              {aiWarnings.filter((w) => w.severity === 1).map((warning) => (
-                <div key={warning.id || warning.drugs?.join('|')} className="interaction-warning boxed">
-                  <span className="badge badge-danger">{warning.title}</span>
-                  <strong>{warning.drugs?.join(' + ')}</strong>
-                  {warning.clinical_effect && <p>{warning.clinical_effect}</p>}
-                  {warning.recommended_action && <p><em>Recommended: {warning.recommended_action}</em></p>}
+            {hasCriticalInteractions > 0 && (
+              <>
+                <p className="muted-line" style={{ lineHeight: 1.6 }}>
+                  These medicines have a potentially serious interaction.
+                  Pharmacist review is required before dispensing.
+                </p>
+                <div className="confirm-warnings">
+                  {aiWarnings
+                    .filter((w) => w.severity === 1)
+                    .map((warning) => (
+                      <div
+                        key={warning.id || warning.drugs?.join("|")}
+                        className="interaction-warning boxed"
+                      >
+                        <span className="badge badge-danger">{warning.title}</span>
+                        <strong>{warning.drugs?.join(" + ")}</strong>
+                        {warning.clinical_effect && <p>{warning.clinical_effect}</p>}
+                        {warning.recommended_action && (
+                          <p>
+                            <em>Recommended: {warning.recommended_action}</em>
+                          </p>
+                        )}
+                      </div>
+                    ))}
                 </div>
-              ))}
-            </div>
+              </>
+            )}
 
-            <label className="form-group" style={{ margin: '1rem 0' }}>
-              Pharmacist review reason *
+            {hasControlled && (
+              <p className="muted-line" style={{ lineHeight: 1.6 }}>
+                This sale contains <strong>CONTROLLED</strong> medicine(s):{" "}
+                {cart
+                  .filter((i) => i.prescription_type === "CONTROLLED")
+                  .map((i) => i.generic_name)
+                  .join(", ")}
+                . Document the prescription/authorization reference below. The
+                server enforces this requirement and records the transaction in
+                the audit log.
+              </p>
+            )}
+
+            <label className="form-group" style={{ margin: "1rem 0" }}>
+              {hasControlled ? "Prescription / authorization reference *" : "Pharmacist review reason *"}
               <textarea
                 className="form-control"
                 rows="3"
                 value={overrideReason}
                 onChange={(event) => setOverrideReason(event.target.value)}
-                placeholder="Document the clinical reason for proceeding…"
+                placeholder={
+                  hasControlled
+                    ? "e.g. Prescription #1234, prescriber name and license…"
+                    : "Document the clinical reason for proceeding…"
+                }
               />
             </label>
 
@@ -1319,32 +1349,73 @@ export const POS = ({
                 onClick={proceedCheckout}
                 disabled={!overrideReason.trim()}
               >
-                Review &amp; Proceed
+                Confirm &amp; Proceed
               </button>
             </div>
           </div>
         </div>
       )}
 
-      {/* Interaction details drawer (severity 1–3, full dataset info) */}
+      {/* ══ SALE COMPLETED → PRINT? ══ */}
+      {showPrintPrompt && saleResult && (
+        <div className="modal-overlay" style={{ zIndex: 1200 }}>
+          <div className="modal-card sale-complete-modal" style={{ maxWidth: "440px" }} role="dialog" aria-modal="true" aria-label="Sale completed">
+            <div className="sale-complete-icon">
+              <CheckCircle2 size={44} />
+            </div>
+            <h3>Sale Completed</h3>
+            <p className="muted-line">
+              Receipt #{saleResult.sale_id ?? "—"} · Total ETB{" "}
+              {Number(saleResult.total).toFixed(2)}
+            </p>
+
+            <div className="sale-op-id">
+              <span>Operation ID</span>
+              <code>{saleResult.operation_id}</code>
+            </div>
+
+            <p style={{ margin: "1rem 0 0.4rem", fontWeight: 600 }}>
+              Would you like to print the receipt?
+            </p>
+
+            <div className="confirm-actions center">
+              <button type="button" className="btn btn-secondary" onClick={closePrintPrompt}>
+                No
+              </button>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => {
+                  printReceipt(saleResult);
+                  closePrintPrompt();
+                }}
+              >
+                Yes, Print
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Interaction details drawer */}
       {showDetails && (
         <div className="modal-overlay" style={{ zIndex: 1100 }} onClick={() => setShowDetails(false)}>
-          <div className="modal-card" style={{ maxWidth: '560px' }} onMouseDown={(e) => e.stopPropagation()}>
+          <div className="modal-card" style={{ maxWidth: "560px" }} onMouseDown={(e) => e.stopPropagation()}>
             <div className="modal-header">
               <h2>Interaction Details</h2>
               <button type="button" className="modal-close-btn" onClick={() => setShowDetails(false)}>×</button>
             </div>
-            <p className="muted-line" style={{ marginBottom: '0.9rem' }}>
+            <p className="muted-line" style={{ marginBottom: "0.9rem" }}>
               Source: local structured DDI reference dataset. Clinical judgement and dose,
               duration and patient factors always apply.
             </p>
-            <div className="confirm-warnings" style={{ maxHeight: '50vh' }}>
+            <div className="confirm-warnings" style={{ maxHeight: "50vh" }}>
               {aiWarnings.map((warning) => (
-                <div key={warning.id || warning.drugs?.join('|')} className={`interaction-warning boxed ${warning.severity === 1 ? 'boxed-critical' : ''}`}>
-                  <span className={`badge ${warning.severity === 1 ? 'badge-danger' : warning.severity === 2 ? 'badge-warning' : 'badge-info'}`}>
+                <div key={warning.id || warning.drugs?.join("|")} className={`interaction-warning boxed ${warning.severity === 1 ? "boxed-critical" : ""}`}>
+                  <span className={`badge ${warning.severity === 1 ? "badge-danger" : warning.severity === 2 ? "badge-warning" : "badge-info"}`}>
                     {warning.title}
                   </span>
-                  <strong>{warning.drugs?.join(' + ')}</strong>
+                  <strong>{warning.drugs?.join(" + ")}</strong>
                   {warning.category && <small className="muted-line">Category: {warning.category}</small>}
                   {warning.mechanism && <p>Mechanism: {warning.mechanism}</p>}
                   {warning.clinical_effect && <p>Effect: {warning.clinical_effect}</p>}

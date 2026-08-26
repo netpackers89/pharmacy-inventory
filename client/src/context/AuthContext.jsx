@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
 import { authAPI } from '../services/api';
+import api from '../services/api';
 
 const AuthContext = createContext();
 
@@ -58,10 +59,25 @@ export const AuthProvider = ({ children }) => {
     }
   };
 
-  const logout = useCallback(() => {
-    localStorage.removeItem('pharm_token');
-    localStorage.removeItem('pharm_user');
-    setUser(null);
+  /*
+   * Logout is SERVER-Authoritative:
+   *  1. tell the backend to close the session row (audit event + the JWT
+   *     becomes unusable immediately, even if a copy of the token remains);
+   *  2. only then clear local state.
+   */
+  const logout = useCallback(async () => {
+    try {
+      const token = localStorage.getItem('pharm_token');
+      if (token) {
+        await api.post('/auth/logout', {}).catch(() => {});
+      }
+    } catch (_) {
+      // Network errors must never trap the user inside the session.
+    } finally {
+      localStorage.removeItem('pharm_token');
+      localStorage.removeItem('pharm_user');
+      setUser(null);
+    }
   }, []);
 
   const isGuest = Boolean(user?.is_guest || user?.role === 'GUEST');

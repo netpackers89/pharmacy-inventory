@@ -89,8 +89,9 @@ function auditMiddleware(req, _res, next) {
    *               oldValues, newValues, metadata, status, sessionId }
    */
   req.auditLog = (client, action, module, options = {}) => {
-    const userId =
-      options.userId ?? req.user?.user_id ?? req.body?.user_id ?? null;
+    // Identity comes ONLY from the authenticated token. A user_id in the
+    // request body is never trusted for audit attribution.
+    const userId = options.userId ?? req.user?.user_id ?? null;
     return insertAudit(client, {
       userId,
       action,

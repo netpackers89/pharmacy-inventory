@@ -297,11 +297,19 @@
 .summary-total {
   display: flex;
   justify-content: space-between;
+  align-items: baseline;
+  gap: 0.75rem;
   font-size: 1.25rem;
   font-weight: 800;
   border-top: 1px solid var(--border-strong);
   padding-top: 0.9rem;
   margin: 0.5rem 0 1rem;
+}
+.summary-total .summary-total-value {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  text-align: right;
 }
 
 .stock-problem {
@@ -335,6 +343,304 @@
 }
 .checkout-success strong { font-size: 1rem; display: block; }
 .checkout-success p { margin: 0.15rem 0 0; font-size: 0.84rem; }
+
+/* ── Live sync indicator ── */
+.pos-sync-state {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-faint);
+}
+.pos-sync-state .spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pos-retry-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  background: var(--warning-bg);
+  border: 1px solid var(--warning-border);
+  color: var(--warning);
+  border-radius: var(--radius-sm);
+  padding: 0.3rem 0.6rem;
+  font-size: 0.76rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+/* ── Prescription type badges ── */
+.rx-badge {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+.rx-badge.otc {
+  background: var(--success-bg);
+  border: 1px solid var(--success-border);
+  color: var(--success);
+}
+.rx-badge.prescription {
+  background: var(--info-bg);
+  border: 1px solid var(--info-border);
+  color: var(--info);
+}
+.rx-badge.controlled,
+.pos-result-type.controlled {
+  background: var(--danger-bg);
+  border: 1px solid var(--danger-border);
+  color: var(--danger);
+}
+.pos-result-type {
+  flex-shrink: 0;
+  display: none;
+  font-size: 0.62rem;
+  font-weight: 800;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+}
+@media (min-width: 560px) {
+  .pos-result-type { display: inline-flex; }
+}
+.pos-result-type.prescription { background: var(--info-bg); border: 1px solid var(--info-border); color: var(--info); }
+.pos-result-type.otc { background: var(--success-bg); border: 1px solid var(--success-border); color: var(--success); }
+
+/* ── Cart item cards ── */
+.pos-items {
+  display: flex;
+  flex-direction: column;
+  gap: 0.85rem;
+}
+
+.pos-item-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-xs);
+  overflow: hidden;
+  min-width: 0;
+}
+
+.pos-item-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.8rem 1rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-alt);
+  flex-wrap: wrap;
+}
+.pos-item-title { min-width: 0; flex: 1; }
+.pos-item-title strong {
+  display: block;
+  font-size: 0.94rem;
+  overflow-wrap: anywhere;
+}
+.pos-item-title .muted-line { margin-top: 2px; overflow-wrap: anywhere; }
+
+.pos-item-head-right {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  flex-shrink: 0;
+}
+
+.pos-item-section {
+  padding: 0.85rem 1rem;
+  border-bottom: 1px solid var(--border);
+}
+.pos-item-section h4 {
+  margin: 0 0 0.6rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+.pos-item-section:last-of-type { border-bottom: none; }
+
+.pos-item-foot {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 0.7rem 1rem;
+  background: var(--surface-alt);
+  border-top: 1px solid var(--border);
+  font-size: 0.86rem;
+  color: var(--text-muted);
+}
+.pos-item-foot strong { font-size: 0.98rem; color: var(--text-main); min-width: 0; overflow-wrap: anywhere; }
+
+/* ── OTC row ── */
+.otc-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-end;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.otc-qty-label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  font-weight: 700;
+  color: var(--text-secondary);
+}
+.otc-pricing { text-align: right; font-weight: 800; font-size: 0.88rem; min-width: 0; }
+.otc-pricing small { display: block; color: var(--text-faint); font-weight: 600; }
+
+/* ── Stepper (quantity / strips) ── */
+.stepper {
+  display: inline-flex;
+  align-items: stretch;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-md);
+  overflow: hidden;
+  background: var(--surface);
+}
+.stepper button {
+  width: 34px;
+  border: 0;
+  background: var(--surface-alt);
+  color: var(--text-main);
+  font-size: 1.05rem;
+  font-weight: 800;
+  cursor: pointer;
+  line-height: 1.2;
+}
+.stepper button:disabled { opacity: 0.4; cursor: not-allowed; }
+.stepper input {
+  width: 64px;
+  text-align: center;
+  border: 0;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-main);
+  font-weight: 800;
+  -moz-appearance: textfield;
+  appearance: textfield;
+}
+.stepper input::-webkit-outer-spin-button,
+.stepper input::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.stepper.compact button { width: 30px; }
+.stepper.compact strong {
+  min-width: 84px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.82rem;
+  padding: 0.45rem 0.4rem;
+  border-left: 1px solid var(--border);
+  border-right: 1px solid var(--border);
+  white-space: nowrap;
+}
+
+/* ── Calculation section ── */
+.pos-item-section.calc h4 { color: var(--info); }
+.calc-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.55rem;
+  margin-top: 0.65rem;
+}
+.calc-box {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: 0.6rem 0.7rem;
+  min-width: 0;
+}
+.calc-box span {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.66rem;
+  font-weight: 800;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--text-faint);
+}
+.calc-box strong {
+  display: block;
+  margin-top: 0.25rem;
+  font-size: 0.9rem;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+.calc-box small { display: block; margin-top: 0.15rem; font-size: 0.7rem; color: var(--text-muted); }
+.calc-box.required { border-color: var(--success-border); background: var(--success-bg); }
+.calc-box.required span, .calc-box.required strong { color: var(--success); }
+.calc-box.required small { color: var(--text-muted); }
+.calc-box.dispensing { display: flex; flex-direction: column; gap: 0.3rem; }
+.calc-price {
+  margin-top: 0.65rem;
+  font-weight: 800;
+  font-size: 0.85rem;
+  color: var(--info);
+  overflow-wrap: anywhere;
+}
+
+/* ── Counseling section ── */
+.pos-item-section.counseling textarea {
+  width: 100%;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  background: var(--surface);
+  color: var(--text-main);
+  resize: vertical;
+  min-height: 64px;
+  font-size: 0.85rem;
+  line-height: 1.5;
+}
+
+/* ── Sale completed modal ── */
+.sale-complete-modal { text-align: center; }
+.sale-complete-icon {
+  display: flex;
+  justify-content: center;
+  color: var(--success);
+  margin-bottom: 0.5rem;
+}
+.sale-complete-modal h3 { margin: 0 0 0.25rem; font-size: 1.2rem; }
+.sale-op-id {
+  margin-top: 0.9rem;
+  padding: 0.6rem 0.7rem;
+  background: var(--surface-alt);
+  border: 1px dashed var(--border-strong);
+  border-radius: var(--radius-md);
+  text-align: left;
+}
+.sale-op-id span {
+  display: block;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+  margin-bottom: 0.25rem;
+}
+.sale-op-id code {
+  font-size: 0.72rem;
+  word-break: break-all;
+  color: var(--text-secondary);
+}
+.confirm-actions.center { justify-content: center; }
+.interaction-confirm-head.controlled { color: var(--info); }
 
 /* ── Mobile sticky checkout ── */
 @media (max-width: 1023px) {

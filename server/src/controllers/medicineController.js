@@ -78,7 +78,11 @@ exports.addMedicine = async (req, res) => {
             user_id
         } = req.body;
 
-        const current_user_id = user_id || (req.user && req.user.user_id) || (req.user && req.user.id) || 1;
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
 
         // Validations
         if (generic_name) {
@@ -133,7 +137,7 @@ exports.addMedicine = async (req, res) => {
         const medResult = await client.query(insertMed, medValues);
         const medicine_id = medResult.rows[0].medicine_id;
 
-        await client.query(`INSERT INTO audit_logs (user_id, action, table_name, record_id, new_values) VALUES ($1,$2,$3,$4,$5)`, [current_user_id, 'CREATE', 'medicines', medicine_id, JSON.stringify({ generic_name, brand_name, description: `Registered ${generic_name} ${brand_name || ''}` })]);
+        await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_CREATED', 'medicines', medicine_id, JSON.stringify({ generic_name, brand_name, description: `Registered ${generic_name} ${brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
 
         // 2. If Initial Stock is provided, create Batch and Stock Movement
         if (initial_stock) {
@@ -202,7 +206,11 @@ exports.updateMedicine = async (req, res) => {
             warnings, storage_conditions, status, reorder_level, max_level, user_id
         } = req.body;
 
-        const current_user_id = user_id || (req.user && req.user.user_id) || (req.user && req.user.id) || 1;
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
 
         // Validations for update
         if (generic_name) {
@@ -262,7 +270,7 @@ exports.updateMedicine = async (req, res) => {
             return res.status(404).json({ error: 'Medicine not found' });
         }
         
-        await client.query(`INSERT INTO audit_logs (user_id, action, table_name, record_id, new_values) VALUES ($1,$2,$3,$4,$5)`, [current_user_id, 'UPDATE', 'medicines', id, JSON.stringify({ generic_name, brand_name, description: `Updated ${generic_name} ${brand_name || ''}` })]);
+        await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_UPDATED', 'medicines', id, JSON.stringify({ generic_name, brand_name, description: `Updated ${generic_name} ${brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
 
         await client.query('COMMIT');
         res.json(result.rows[0]);
@@ -348,7 +356,11 @@ exports.confirmImport = async (req, res) => {
     try {
         await client.query('BEGIN');
         const { medicines, user_id } = req.body;
-        const current_user_id = user_id || (req.user && req.user.user_id) || (req.user && req.user.id) || 1;
+        const current_user_id = req.user && req.user.user_id;
+
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
         
         let imported = 0;
         let medicines_created = 0;
@@ -374,7 +386,7 @@ exports.confirmImport = async (req, res) => {
                 const medRes = await client.query(insertMed, [row.category_id || null, row.sub_category_id || null, row.generic_name, row.brand_name, row.strength, row.dosage_form, row.route]);
                 medicine_id = medRes.rows[0].medicine_id;
                 medicines_created++;
-                await client.query(`INSERT INTO audit_logs (user_id, action, table_name, record_id, new_values) VALUES ($1,$2,$3,$4,$5)`, [current_user_id, 'CREATE', 'medicines', medicine_id, JSON.stringify({ generic_name: row.generic_name, brand_name: row.brand_name, description: `Registered ${row.generic_name} ${row.brand_name || ''}` })]);
+                await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_CREATED', 'medicines', medicine_id, JSON.stringify({ generic_name: row.generic_name, brand_name: row.brand_name, description: `Registered ${row.generic_name} ${row.brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
             }
             
             const batchCheck = await client.query(`SELECT batch_id, stock_quantity FROM batches WHERE medicine_id=$1 AND LOWER(TRIM(batch_number))=$2`, [medicine_id, batch_number]);

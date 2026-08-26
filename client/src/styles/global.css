@@ -618,6 +618,12 @@ img, video, svg { max-width: 100%; }
 }
 .stat-card:hover { transform: translateY(-2px); box-shadow: var(--shadow-md); border-color: var(--border-strong); }
 
+/* MOBILE OVERFLOW PROTECTION — long ETB values must wrap inside the card,
+   never escape it. The value area is allowed to shrink and wrap naturally. */
+.stat-info {
+  min-width: 0;
+  flex: 1;
+}
 .stat-info .stat-label {
   font-size: 0.76rem;
   color: var(--text-muted);
@@ -629,6 +635,9 @@ img, video, svg { max-width: 100%; }
   color: var(--text-main);
   margin-top: 0.2rem;
   letter-spacing: -0.02em;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 .stat-icon-wrapper {
   width: 44px;
@@ -808,4 +817,32 @@ img, video, svg { max-width: 100%; }
 @media (min-width: 1024px) {
   .content-area { padding: 1.75rem 2rem; }
   .dashboard-grid { grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 1.25rem; }
+}
+
+/* ===================================================
+   GLOBAL MOBILE SAFETY NET
+   Numbers, currency values and long words must never
+   force horizontal overflow anywhere in the app.
+   =================================================== */
+@media (max-width: 640px) {
+  /* Stat cards collapse to a single column on narrow phones so large
+     ETB amounts always have room to wrap naturally. */
+  .dashboard-grid {
+    grid-template-columns: 1fr !important;
+    gap: 0.85rem;
+  }
+
+  html, body { overflow-x: hidden; }
+}
+
+/* Universal text-wrap guards for value-bearing elements */
+.stat-value,
+.summary-total,
+.dash-row-value,
+.rx-price,
+.rx-formula,
+.calc-price,
+.pos-result-price {
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }

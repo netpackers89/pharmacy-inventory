@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { getIO } = require('../socket');
 
 exports.getAllSales = async (req, res) => {
   try {
@@ -57,14 +58,54 @@ exports.getSaleDetails = async (req, res) => {
   }
 };
 
+/*
+ * FREQUENCY table mirrors the POS frontend so the backend can re-validate
+ * prescription math independently of React.
+ */
+const FREQUENCY_PER_DAY = {
+  QD: 1, BID: 2, TID: 3, QID: 4, QOD: 0.5, Q4H: 6, Q6H: 4,
+  Q8H: 3, Q12H: 2, QW: 1 / 7, BIW: 2 / 7,
+};
+
 exports.createSale = async (req, res) => {
   const client = await db.getClient();
   try {
     await client.query('BEGIN');
-    
-    // items is an array of { medicine_id, quantity, dose_per_admin, frequency_code, duration_days, route_of_admin, required_qty, dispensing_unit, counseling_note }
-    const { user_id, items, payment_method, override_reason } = req.body;
-    const current_user_id = user_id || (req.user && req.user.user_id) || 1;
+
+    /*
+     * IDENTITY: the selling user ALWAYS comes from the authenticated token.
+     * A user_id in the request body is ignored — the frontend is never
+     * trusted to declare who performed a transaction.
+     */
+    const current_user_id = req.user && req.user.user_id;
+    if (!current_user_id) {
+      throw new Error('Authenticated staff account required for sales');
+    }
+
+    const { items, payment_method, override_reason, operation_id } = req.body;
+
+    // ── Idempotency: retrying the same checkout can never double-sell ──────
+    let existingSale = null;
+    if (operation_id) {
+      const dup = await client.query(
+        `SELECT sale_id, total_amount FROM sales WHERE operation_id = $1 LIMIT 1`,
+        [String(operation_id)]
+      );
+      if (dup.rows.length > 0) {
+        existingSale = dup.rows[0];
+      }
+    }
+
+    if (existingSale) {
+      // Roll back nothing — we have not written anything yet.
+      await client.query('ROLLBACK');
+      return res.status(200).json({
+        message: 'Sale already processed (idempotent replay)',
+        sale_id: existingSale.sale_id,
+        total_amount: parseFloat(existingSale.total_amount),
+        duplicate: true,
+      });
+    }
 
     if (!items || !Array.isArray(items) || items.length === 0) {
       throw new Error('Cart must contain at least one medicine');
@@ -74,14 +115,80 @@ exports.createSale = async (req, res) => {
     const saleItemsRecords = [];
     const stockMovementsRecords = [];
     const batchUpdates = [];
+    const controlledMedicines = [];
+    const auditItemDetails = [];
 
     for (const item of items) {
       const medId = item.medicine_id;
-      let qtyNeeded = parseInt(item.quantity || 1, 10);
+      if (!medId || !Number.isInteger(Number(medId))) {
+        throw new Error('Each cart item needs a valid medicine_id');
+      }
 
-      // Find eligible batches for this medicine (FEFO order)
+      /*
+       * QUANTITY: single doses to dispense. Validated as a positive integer —
+       * negative or zero quantities can never create stock.
+       */
+      let qtyNeeded = parseInt(item.quantity, 10);
+      if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
+        throw new Error(`Invalid quantity for medicine ID ${medId}`);
+      }
+
+      /*
+       * PRESCRIPTION TYPE comes from the DATABASE, never from React.
+       * The medicine record is authoritative for OTC/PRESCRIPTION/CONTROLLED.
+       */
+      const medRes = await client.query(
+        `SELECT medicine_id, generic_name, brand_name, strength, prescription_type
+           FROM medicines WHERE medicine_id = $1`,
+        [medId]
+      );
+      if (medRes.rows.length === 0) {
+        throw new Error(`Medicine ID ${medId} does not exist`);
+      }
+      const medicine = medRes.rows[0];
+      const rxType = (medicine.prescription_type || 'OTC').toUpperCase();
+
+      if (rxType === 'CONTROLLED') {
+        // Controlled substances require documented authorization at checkout.
+        if (!override_reason || !String(override_reason).trim()) {
+          throw new Error(
+            `Controlled medicine "${medicine.generic_name}" requires an authorization/prescription reference before dispensing`
+          );
+        }
+        controlledMedicines.push(medicine);
+      }
+
+      if (rxType === 'PRESCRIPTION' || rxType === 'CONTROLLED') {
+        // Prescription workflow must carry clinical dosing information.
+        const hasDoseInfo =
+          item.dose_per_admin != null &&
+          item.frequency_code &&
+          item.duration_days != null;
+        if (!hasDoseInfo) {
+          throw new Error(
+            `${medicine.prescription_type === 'CONTROLLED' ? 'Controlled' : 'Prescription'} medicine "${medicine.generic_name}" needs dose, frequency and duration`
+          );
+        }
+        // Backend re-validates the required-dose calculation (read-only rule).
+        const perDay = FREQUENCY_PER_DAY[String(item.frequency_code).toUpperCase()];
+        if (perDay !== undefined) {
+          const expectedMin = Math.ceil(
+            Number(item.dose_per_admin) * perDay * Number(item.duration_days)
+          );
+          if (
+            Number.isFinite(expectedMin) &&
+            Number(item.required_qty) > expectedMin * 1000
+          ) {
+            throw new Error(`Required dose for "${medicine.generic_name}" failed server-side validation`);
+          }
+        }
+      }
+
+      // Find eligible batches for this medicine (FEFO order — first-expired-
+      // first-out). Stock can NEVER go below zero: allocation stops at what
+      // exists and any shortfall aborts the whole transaction.
       const batchesRes = await client.query(`
-        SELECT batch_id, stock_quantity, sell_price 
+        SELECT batch_id, stock_quantity, sell_price, units_per_package
         FROM batches
         WHERE medicine_id = $1 AND stock_quantity > 0 AND status = 'ACTIVE'
         ORDER BY expiry_date ASC
@@ -105,7 +212,18 @@ exports.createSale = async (req, res) => {
           remaining -= batch.stock_quantity;
         }
 
-        const itemTotal = parseFloat(batch.sell_price) * qtyToTake;
+        /*
+         * PRICE: batches store the price PER PACKAGING UNIT (e.g. per strip)
+         * while stock is counted in SINGLE DOSES — so the per-dose price is
+         * derived here on the server. React never sends a price.
+         */
+        const unitPrice = parseFloat(batch.sell_price);
+        if (!Number.isFinite(unitPrice) || unitPrice < 0) {
+          throw new Error(`Batch ${batch.batch_id} has an invalid price`);
+        }
+        const dosesPerUnit = Math.max(1, parseInt(batch.units_per_package, 10) || 1);
+        const perDosePrice = unitPrice / dosesPerUnit;
+        const itemTotal = perDosePrice * qtyToTake;
         calculatedTotal += itemTotal;
 
         batchUpdates.push({
@@ -117,7 +235,7 @@ exports.createSale = async (req, res) => {
         saleItemsRecords.push({
           batch_id: batch.batch_id,
           quantity: qtyToTake,
-          sell_price: batch.sell_price,
+          sell_price: perDosePrice,   // per SINGLE DOSE so qty × price = total
           total_price: itemTotal,
           dose_per_admin: item.dose_per_admin || null,
           frequency_code: item.frequency_code || null,
@@ -134,26 +252,43 @@ exports.createSale = async (req, res) => {
           previous_stock: previous_stock,
           new_stock: new_stock
         });
+
+        auditItemDetails.push({
+          medicine_id: medId,
+          name: `${medicine.generic_name}${medicine.strength ? ` ${medicine.strength}` : ''}`,
+          prescription_type: rxType,
+          quantity: qtyToTake,
+          price: itemTotal.toFixed(2),
+        });
       }
 
       if (remaining > 0) {
-        throw new Error('Insufficient stock for medicine ID ' + medId);
+        throw new Error(`Insufficient stock for ${medicine.generic_name} — requested ${qtyNeeded}, available ${qtyNeeded - remaining}. Stock cannot go negative.`);
       }
     }
 
-    // Insert sale header
-    console.log("Executing sales insert...");
+    // Insert sale header — timestamp is generated by PostgreSQL itself.
     const saleResult = await client.query(`
-      INSERT INTO sales (user_id, total_amount, subtotal, payment_method, override_reason)
-      VALUES ($1, $2, $3, $4, $5)
-      RETURNING sale_id
-    `, [current_user_id, calculatedTotal, calculatedTotal, payment_method || 'CASH', override_reason || null]);
+      INSERT INTO sales (user_id, total_amount, subtotal, payment_method, override_reason, operation_id)
+      VALUES ($1, $2, $3, $4, $5, $6)
+      RETURNING sale_id, sale_date
+    `, [
+      current_user_id,
+      calculatedTotal,
+      calculatedTotal,
+      ['CASH', 'CARD', 'TRANSFER', 'OTHER'].includes(payment_method) ? payment_method : 'CASH',
+      override_reason || null,
+      operation_id ? String(operation_id) : null
+    ]);
 
     const saleId = saleResult.rows[0].sale_id;
 
     // Apply batch updates and insert sale_items and stock_movements
     for (const bu of batchUpdates) {
-        await client.query(`UPDATE batches SET stock_quantity = $1, status = $2, updated_at=NOW() WHERE batch_id = $3`, [bu.new_stock, bu.status, bu.batch_id]);
+        await client.query(
+          `UPDATE batches SET stock_quantity = $1, status = $2, updated_at=NOW() WHERE batch_id = $3`,
+          [bu.new_stock, bu.status, bu.batch_id]
+        );
     }
 
     for (const si of saleItemsRecords) {
@@ -177,39 +312,74 @@ exports.createSale = async (req, res) => {
         `, [medicine_id, sm.batch_id, current_user_id, sm.quantity, sm.previous_stock, sm.new_stock, saleId]);
     }
 
-    // Audit log — inside the same transaction for atomicity
+    /*
+     * AUDIT: real user, real database timestamp, full transaction detail.
+     * Controlled medicines additionally raise a SECURITY event each.
+     */
     await client.query(`
-      INSERT INTO audit_logs (user_id, action, module, table_name, record_id, entity_type, entity_id, description, new_values, ip_address, user_agent, status)
-      VALUES ($1, 'SALE', 'POS', 'sales', $2, 'sale', $2, $3, $4, $5, $6, 'SUCCESS')
+      INSERT INTO audit_logs (user_id, action, module, table_name, record_id, entity_type, entity_id, description, new_values, ip_address, user_agent, session_id, status)
+      VALUES ($1, 'SALE_CREATED', 'SALES', 'sales', $2, 'sale', $2, $3, $4, $5, $6, $7, 'SUCCESS')
     `, [
       current_user_id,
       saleId,
-      `Sale completed — ${saleItemsRecords.length} item(s), total ${calculatedTotal} ETB`,
-      JSON.stringify({ total_amount: calculatedTotal, item_count: saleItemsRecords.length, payment_method }),
+      `Sale #${saleId} completed by ${req.user.full_name || req.user.username} — ${saleItemsRecords.length} item(s), total ETB ${calculatedTotal.toFixed(2)}${controlledMedicines.length ? ` (includes ${controlledMedicines.length} controlled medicine(s))` : ''}`,
+      JSON.stringify({
+        operation_id: operation_id || null,
+        total_amount: calculatedTotal.toFixed(2),
+        payment_method: payment_method || 'CASH',
+        items: auditItemDetails,
+        override_reason: override_reason || null,
+      }),
       req.ipAddress || null,
-      req.userAgent || null
+      req.userAgent || null,
+      req.sessionId || null
     ]);
 
+    for (const cm of controlledMedicines) {
+      await client.query(`
+        INSERT INTO audit_logs (user_id, action, module, table_name, record_id, entity_type, entity_id, description, metadata, ip_address, user_agent, session_id, status)
+        VALUES ($1, 'CONTROLLED_SALE', 'SECURITY', 'sales', $2, 'medicine', $3, $4, $5, $6, $7, $8, 'SUCCESS')
+      `, [
+        current_user_id,
+        saleId,
+        cm.medicine_id,
+        `Controlled medicine dispensed: ${cm.generic_name}${cm.strength ? ` ${cm.strength}` : ''} (authorization documented)`,
+        JSON.stringify({ medicine: cm.generic_name, sale_id: saleId }),
+        req.ipAddress || null,
+        req.userAgent || null,
+        req.sessionId || null
+      ]);
+    }
+
     await client.query('COMMIT');
+
+    // Real-time: every other connected client refreshes stock/reports.
+    try { getIO().emit('data_updated', { topic: 'sale', sale_id: saleId }); } catch (_) {}
+
     res.status(201).json({
       message: 'Sale completed successfully',
       sale_id: saleId,
-      total_amount: calculatedTotal
+      total_amount: calculatedTotal,
+      sale_date: saleResult.rows[0].sale_date,
+      operation_id: operation_id || null
     });
   } catch (err) {
-    await client.query('ROLLBACK');
-    console.error('Error creating sale:', err);
-    // Log failed sale attempt (outside transaction since it was rolled back)
+    try { await client.query('ROLLBACK'); } catch (_) {}
+    console.error('Error creating sale:', err.message);
+    const isClientError = /^(Insufficient stock|Cart must|Invalid |Controlled medicine|Prescription medicine|Each cart|Authenticated staff)/.test(err.message || '');
     try {
       await db.query(`
-        INSERT INTO audit_logs (user_id, action, module, table_name, description, status)
-        VALUES ($1, 'SALE', 'POS', 'sales', $2, 'FAILED')
+        INSERT INTO audit_logs (user_id, action, module, table_name, description, ip_address, user_agent, session_id, status)
+        VALUES ($1, 'SALE_FAILED', 'SALES', 'sales', $2, $3, $4, $5, 'FAILED')
       `, [
-        req.body?.user_id || null,
-        `Sale failed: ${err.message}`
+        (req.user && req.user.user_id) || null,
+        `Sale failed: ${err.message}`,
+        req.ipAddress || null,
+        req.userAgent || null,
+        req.sessionId || null
       ]);
     } catch (_) {}
-    res.status(500).json({ error: err.message || 'Failed to process sale' });
+    res.status(isClientError ? 400 : 500).json({ error: err.message || 'Failed to process sale' });
   } finally {
     client.release();
   }

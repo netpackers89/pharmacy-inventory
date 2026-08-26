@@ -18,43 +18,71 @@
 const bcrypt = require('bcryptjs');
 const jwt    = require('jsonwebtoken');
 const db     = require('../config/db');
+const { checkLocked, recordFailure, clearFailures } = require('../middleware/rateLimit');
 
 const JWT_SECRET = process.env.JWT_SECRET || 'pharm_secret_jwt_key_2026';
 
 /* ─────────────────────────────────────────────────────────────────────────── *
  *  login
- *  POST /api/auth/login  { username (email or username), password }
+ *  POST /api/auth/login  { username, password }
  *
  *  NET-PHARMA is an internal system: there is NO public self-registration.
  *  Accounts are created only by administrators (see userController).
+ *  Authentication is USERNAME + PASSWORD. Progressive lockout is stored in
+ *  the database so it survives restarts and cannot be reset by attackers.
  * ─────────────────────────────────────────────────────────────────────────── */
 exports.login = async (req, res) => {
-  const rawIdentifier = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
+  const username = typeof req.body?.username === 'string' ? req.body.username.trim() : '';
   const password = req.body?.password;
+  const ip       = req.ipAddress;
 
   // ── 1. Basic input validation ──────────────────────────────────────────────
-  if (!rawIdentifier || !password) {
-    return res.status(400).json({ error: 'Email/username and password are required' });
+  if (!username || !password) {
+    return res.status(400).json({ error: 'Username and password are required' });
   }
 
-  // ── 2. Look up the user (identifier may be a username or email-style name) ─
+  // ── 2. Persistent brute-force lockout (username + IP) ─────────────────────
+  try {
+    const lock = await checkLocked(username, ip);
+    if (lock.locked) {
+      await req.auditLog(null, 'LOGIN_BLOCKED', 'SECURITY', {
+        status      : 'FAILED',
+        description : `Sign-in blocked — account "${username.toLowerCase()}" is locked for ${lock.retryAfterMinutes} more minute(s)`,
+        ipAddress   : ip,
+        userAgent   : req.userAgent,
+        metadata    : { username_key: username.toLowerCase(), retry_after_minutes: lock.retryAfterMinutes },
+      });
+      return res.status(423).json({
+        error: `Account temporarily locked due to repeated failed sign-in attempts. Try again in ${lock.retryAfterMinutes} minute(s).`,
+        code : 'ACCOUNT_LOCKED',
+        retry_after_minutes: lock.retryAfterMinutes,
+      });
+    }
+  } catch (err) {
+    // Lockout infrastructure failure must never open the door wider.
+    console.error('[LOGIN] Lockout check error:', err.message);
+  }
+
+  // ── 3. Look up the user by USERNAME only ───────────────────────────────────
   let user;
   try {
     const result = await db.query(
       `SELECT user_id, username, role, full_name, password_hash, status
           FROM users
-         WHERE username = $1 OR LOWER(username) = LOWER($1)
+         WHERE LOWER(username) = LOWER($1)
          LIMIT 1`,
-      [rawIdentifier]
+      [username]
     );
 
     if (result.rows.length === 0) {
+      const lockState = await recordFailure(username, ip).catch(() => null);
       // Unknown user → log failed attempt (no real user_id available)
       await req.auditLog(null, 'LOGIN', 'AUTH', {
         status      : 'FAILED',
-        description : `Failed login attempt — account not found for "${rawIdentifier}"`,
-        ipAddress   : req.ipAddress,
+        description : `Failed sign-in attempt — unknown username "${username}"`,
+        ipAddress   : ip,
         userAgent   : req.userAgent,
+        metadata    : lockState?.locked ? { locked_for_minutes: lockState.retryAfterMinutes } : undefined,
       });
       return res.status(401).json({ error: 'Invalid credentials' });
     }
@@ -65,7 +93,7 @@ exports.login = async (req, res) => {
     return res.status(500).json({ error: 'Server authentication error' });
   }
 
-  // ── 3. Verify password ─────────────────────────────────────────────────────
+  // ── 4. Verify password ─────────────────────────────────────────────────────
   let isMatch = false;
   try {
     isMatch = await bcrypt.compare(password, user.password_hash);
@@ -75,28 +103,43 @@ exports.login = async (req, res) => {
   }
 
   if (!isMatch) {
-    // Wrong password → audit failed attempt then reject
+    const lockState = await recordFailure(username, ip).catch(() => null);
+
     await req.auditLog(null, 'LOGIN', 'AUTH', {
       userId      : user.user_id,
       status      : 'FAILED',
-      description : 'Failed login attempt',
-      ipAddress   : req.ipAddress,
+      description : lockState?.locked
+        ? `Failed sign-in attempt — account locked for ${lockState.retryAfterMinutes} minute(s)`
+        : 'Failed sign-in attempt',
+      ipAddress   : ip,
       userAgent   : req.userAgent,
+      metadata    : lockState ? { failed_attempts: lockState.attempts } : undefined,
     });
+
+    if (lockState?.locked) {
+      return res.status(423).json({
+        error: `Too many failed attempts. Account locked for ${lockState.retryAfterMinutes} minute(s).`,
+        code : 'ACCOUNT_LOCKED',
+        retry_after_minutes: lockState.retryAfterMinutes,
+      });
+    }
     return res.status(401).json({ error: 'Invalid credentials' });
   }
 
-  // ── 4. Check account status ────────────────────────────────────────────────
+  // ── 5. Check account status ────────────────────────────────────────────────
   if (user.status !== 'ACTIVE') {
     await req.auditLog(null, 'LOGIN', 'AUTH', {
       userId      : user.user_id,
       status      : 'FAILED',
-      description : 'Failed login attempt — account inactive',
-      ipAddress   : req.ipAddress,
+      description : 'Failed sign-in attempt — account inactive',
+      ipAddress   : ip,
       userAgent   : req.userAgent,
     });
     return res.status(403).json({ error: 'Account is inactive. Contact an administrator.' });
   }
+
+  // Successful credentials → clear the failure counter for this username+IP.
+  await clearFailures(username, ip);
 
   // ── 5. Transaction: create session + audit success ─────────────────────────
   let client;
@@ -227,21 +270,24 @@ exports.guestLogin = async (req, res) => {
  *  POST /api/auth/logout  { session_id? }   (also falls back to req.user)
  * ─────────────────────────────────────────────────────────────────────────── */
 exports.logout = async (req, res) => {
-  // Accept session_id from body or from the decoded JWT (set by auth middleware)
-  const session_id = req.body?.session_id ?? req.user?.session_id ?? null;
-  const userId     = req.user?.user_id    ?? req.body?.user_id    ?? null;
+  // The session identity ALWAYS comes from the authenticated token —
+  // never from a body value supplied by the client.
+  const session_id = req.user?.session_id ?? null;
+  const userId     = req.user?.user_id    ?? null;
 
   if (!session_id) {
-    return res.status(400).json({ error: 'session_id is required' });
+    return res.status(400).json({ error: 'No active server session to close' });
   }
 
   try {
-    // Mark session as closed
+    // Mark session as closed — after this, the JWT is rejected by
+    // authenticate() even if the client keeps a copy of the token.
     await db.query(
       `UPDATE user_sessions
           SET logout_at     = NOW(),
+              last_activity_at = NOW(),
               logout_reason = 'LOGOUT'
-        WHERE session_id = $1`,
+        WHERE session_id = $1 AND logout_at IS NULL`,
       [session_id]
     );
 
@@ -298,4 +344,116 @@ exports.refreshActivity = async (req, res) => {
  * ─────────────────────────────────────────────────────────────────────────── */
 exports.getCurrentUser = (req, res) => {
   return res.json({ user: req.user });
+};
+
+/* ─────────────────────────────────────────────────────────────────────────── *
+ *  getSessions   GET /api/auth/sessions        (ADMIN only)
+ *  Real session history from the database — login/logout/activity times are
+ *  server-generated (UTC) and never faked by the frontend.
+ * ─────────────────────────────────────────────────────────────────────────── */
+exports.getSessions = async (req, res) => {
+  try {
+    const { status = 'ACTIVE', limit = '100' } = req.query;
+    const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 100));
+
+    const params = [limitNum];
+    let where = '';
+    if (String(status).toUpperCase() === 'ACTIVE') {
+      where = 'WHERE s.logout_at IS NULL';
+    }
+
+    const result = await db.query(
+      `SELECT s.session_id,
+              s.user_id,
+              u.full_name,
+              u.username,
+              u.role,
+              s.login_at,
+              s.last_activity_at,
+              s.logout_at,
+              s.logout_reason,
+              s.ip_address,
+              s.user_agent,
+              CASE
+                WHEN s.logout_at IS NULL THEN 'ACTIVE'
+                ELSE 'CLOSED'
+              END AS status,
+              ROUND(EXTRACT(EPOCH FROM (
+                COALESCE(s.logout_at, NOW()) - s.login_at
+              )) / 60)::INTEGER AS duration_minutes
+         FROM user_sessions s
+         LEFT JOIN users u ON s.user_id = u.user_id
+         ${where}
+        ORDER BY s.login_at DESC
+        LIMIT $1`,
+      params
+    );
+
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error('[SESSIONS]', err.message);
+    res.status(500).json({ success: false, error: 'Unable to retrieve sessions' });
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────────────────── *
+ *  getMySessions   GET /api/auth/sessions/mine
+ *  A user can review their own recent session history.
+ * ─────────────────────────────────────────────────────────────────────────── */
+exports.getMySessions = async (req, res) => {
+  try {
+    const result = await db.query(
+      `SELECT session_id, login_at, last_activity_at, logout_at, logout_reason,
+              ip_address,
+              CASE WHEN logout_at IS NULL THEN 'ACTIVE' ELSE 'CLOSED' END AS status
+         FROM user_sessions
+        WHERE user_id = $1
+        ORDER BY login_at DESC
+        LIMIT 20`,
+      [req.user.user_id]
+    );
+    res.json({ success: true, data: result.rows });
+  } catch (err) {
+    console.error('[MY_SESSIONS]', err.message);
+    res.status(500).json({ success: false, error: 'Unable to retrieve your sessions' });
+  }
+};
+
+/* ─────────────────────────────────────────────────────────────────────────── *
+ *  revokeSession   POST /api/auth/sessions/:id/revoke   (ADMIN only)
+ *  Force-closes a session (e.g. compromised account). The next request made
+ *  with that token is rejected server-side.
+ * ─────────────────────────────────────────────────────────────────────────── */
+exports.revokeSession = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const result = await db.query(
+      `UPDATE user_sessions
+          SET logout_at = NOW(),
+              logout_reason = 'REVOKED'
+        WHERE session_id = $1 AND logout_at IS NULL
+        RETURNING session_id, user_id`,
+      [id]
+    );
+
+    if (result.rows.length === 0) {
+      return res.status(404).json({ error: 'Session not found or already closed' });
+    }
+
+    await req.auditLog(null, 'SESSION_REVOKED', 'SECURITY', {
+      userId      : result.rows[0].user_id,
+      recordId    : result.rows[0].session_id,
+      sessionId   : result.rows[0].session_id,
+      tableName   : 'user_sessions',
+      description : `Administrator revoked session #${result.rows[0].session_id}`,
+      ipAddress   : req.ipAddress,
+      userAgent   : req.userAgent,
+    });
+
+    return res.json({ message: 'Session revoked successfully' });
+  } catch (err) {
+    console.error('[REVOKE_SESSION]', err.message);
+    return res.status(500).json({ error: 'Server error revoking session' });
+  }
 };

@@ -1,11 +1,11 @@
 const express = require('express');
 const router = express.Router();
 const ctrl = require('../controllers/settingsController');
-const { authenticate, requireAdmin } = require('../middleware/auth');
+const { requireAdmin } = require('../middleware/auth');
 
-router.get('/', authenticate, ctrl.getAll);
-// Settings mutations are administrator-only.
-router.put('/:key', authenticate, requireAdmin, ctrl.updateSetting);
-router.post('/batch', authenticate, requireAdmin, ctrl.updateBatch);
+// Reads: authenticated staff (global gate). Mutations: administrator-only.
+router.get('/', ctrl.getAll);
+router.put('/:key', requireAdmin, ctrl.updateSetting);
+router.post('/batch', requireAdmin, ctrl.updateBatch);
 
 module.exports = router;
