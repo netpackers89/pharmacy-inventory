@@ -95,3 +95,64 @@ export const ConfirmDialog = ({
 
 /* ── Inline button spinner for submit buttons ── */
 export const ButtonSpinner = () => <Loader2 size={15} className="spin" />;
+
+/* ── Pagination: modern prev/next with page summary ── */
+export const Pagination = ({ page, totalPages, total = 0, label = 'items', onPageChange }) => {
+  if (!totalPages || totalPages <= 1) return null;
+  const pages = [];
+  const start = Math.max(1, page - 2);
+  const end = Math.min(totalPages, page + 2);
+  for (let i = start; i <= end; i++) pages.push(i);
+
+  return (
+    <div className="pagination-controls">
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        disabled={page <= 1}
+        onClick={() => onPageChange(page - 1)}
+        aria-label="Previous page"
+      >
+        ← Previous
+      </button>
+      <div className="pagination-pages">
+        {start > 1 && (
+          <>
+            <button type="button" className={`pagination-page ${page === 1 ? 'active' : ''}`} onClick={() => onPageChange(1)}>1</button>
+            {start > 2 && <span className="pagination-ellipsis">…</span>}
+          </>
+        )}
+        {pages.map((p) => (
+          <button
+            key={p}
+            type="button"
+            className={`pagination-page ${page === p ? 'active' : ''}`}
+            onClick={() => onPageChange(p)}
+            aria-label={`Page ${p}`}
+            aria-current={page === p ? 'page' : undefined}
+          >
+            {p}
+          </button>
+        ))}
+        {end < totalPages && (
+          <>
+            {end < totalPages - 1 && <span className="pagination-ellipsis">…</span>}
+            <button type="button" className={`pagination-page ${page === totalPages ? 'active' : ''}`} onClick={() => onPageChange(totalPages)}>{totalPages}</button>
+          </>
+        )}
+      </div>
+      <span className="pagination-info">
+        Page {page} of {totalPages} · {total.toLocaleString()} {label}
+      </span>
+      <button
+        type="button"
+        className="btn btn-ghost btn-sm"
+        disabled={page >= totalPages}
+        onClick={() => onPageChange(page + 1)}
+        aria-label="Next page"
+      >
+        Next →
+      </button>
+    </div>
+  );
+};

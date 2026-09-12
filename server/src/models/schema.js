@@ -211,6 +211,83 @@ async function initSchema() {
     console.error("Error creating audit_logs table:", err.message);
   }
 
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN image_url VARCHAR(500)`);
+  } catch (err) {}
+
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN release_type VARCHAR(50)`);
+  } catch (err) {}
+
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN therapeutic_class VARCHAR(100)`);
+  } catch (err) {}
+
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN pharmacological_class VARCHAR(100)`);
+  } catch (err) {}
+
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN counseling_points TEXT`);
+  } catch (err) {}
+
+  // Base tables used by controllers/import (idempotent for fresh installs)
+  try {
+    await db.query(`CREATE TABLE IF NOT EXISTS categories (
+      category_id SERIAL PRIMARY KEY,
+      name VARCHAR(100) UNIQUE NOT NULL,
+      status VARCHAR(10) DEFAULT 'ACTIVE',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await db.query(`CREATE TABLE IF NOT EXISTS sub_categories (
+      sub_category_id SERIAL PRIMARY KEY,
+      category_id INTEGER NOT NULL REFERENCES categories(category_id) ON DELETE CASCADE,
+      name VARCHAR(100) NOT NULL,
+      status VARCHAR(10) DEFAULT 'ACTIVE',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await db.query(`CREATE TABLE IF NOT EXISTS batches (
+      batch_id SERIAL PRIMARY KEY,
+      medicine_id INTEGER NOT NULL REFERENCES medicines(id) ON DELETE CASCADE,
+      supplier_id INTEGER REFERENCES suppliers(id) ON DELETE SET NULL,
+      batch_number VARCHAR(100) NOT NULL,
+      expiry_date DATE,
+      buy_price DECIMAL(10,2) DEFAULT 0.00,
+      sell_price DECIMAL(10,2) DEFAULT 0.00,
+      stock_quantity INTEGER DEFAULT 0,
+      status VARCHAR(20) DEFAULT 'ACTIVE',
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+    await db.query(`CREATE TABLE IF NOT EXISTS stock_movements (
+      id SERIAL PRIMARY KEY,
+      batch_id INTEGER NOT NULL REFERENCES batches(batch_id) ON DELETE CASCADE,
+      user_id INTEGER REFERENCES users(id),
+      movement_type VARCHAR(30) NOT NULL,
+      quantity INTEGER NOT NULL,
+      previous_stock INTEGER DEFAULT 0,
+      new_stock INTEGER DEFAULT 0,
+      notes TEXT,
+      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+    );`);
+  } catch (err) {
+    console.error('Base table init:', err.message);
+  }
+
+  // Indexes for fast duplicate matching & stock joins (bulk import performance)
+  try {
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_medicines_generic ON medicines (LOWER(TRIM(generic_name)))`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_medicines_brand ON medicines (LOWER(TRIM(brand_name)))`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_medicines_strength ON medicines (LOWER(TRIM(strength)))`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_batches_medicine ON batches (medicine_id)`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_batches_number ON batches (LOWER(TRIM(batch_number)))`);
+    await db.query(`CREATE INDEX IF NOT EXISTS idx_movements_batch ON stock_movements (batch_id)`);
+  } catch (err) {
+    // Index errors are non-fatal (e.g. expression index unsupported)
+    console.error('Index init:', err.message);
+  }
+
   console.log("Database schema initialized successfully.");
 }
 

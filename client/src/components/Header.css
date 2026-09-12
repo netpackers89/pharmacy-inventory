@@ -7,6 +7,8 @@
   justify-content: space-between;
   padding: 0 0.75rem;
   gap: 0.6rem;
+  /* Sticky top navigation on SMALL screens only: the mobile menu + search
+     stay reachable while scrolling long pages. */
   position: sticky;
   top: 0;
   z-index: 40;
@@ -15,6 +17,15 @@
   -webkit-backdrop-filter: blur(10px);
   border-bottom: 1px solid var(--border);
   width: 100%;
+}
+
+/* Desktop: the persistent sidebar is the primary navigation, so the header
+   scrolls away naturally — matching the original desktop behavior. */
+@media (min-width: 1024px) {
+  .header {
+    position: static;
+    z-index: auto;
+  }
 }
 
 .sidebar-toggle-btn {

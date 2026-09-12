@@ -5,6 +5,7 @@ import {
 } from 'recharts';
 import { reportsAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
+import { Pagination } from '../components/ui';
 import {
   TrendingUp, Package, DollarSign, ShoppingBag,
   AlertTriangle, Activity, BarChart2, Users, Download, RefreshCw, Shield
@@ -178,11 +179,11 @@ const OverviewTab = () => {
           )}
           <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem', marginTop: '0.5rem' }}>
             {[
-              { label: '🟢 Healthy', val: data.inventory_status.healthy },
-              { label: '🟡 Low Stock', val: data.inventory_status.low_stock },
-              { label: '🔴 Out of Stock', val: data.inventory_status.out_of_stock },
-              { label: '🟠 Expiring Soon', val: data.inventory_status.expiring_soon },
-              { label: '⚫ Expired', val: data.inventory_status.expired },
+              { label: 'Healthy', val: data.inventory_status.healthy },
+              { label: 'Low Stock', val: data.inventory_status.low_stock },
+              { label: 'Out of Stock', val: data.inventory_status.out_of_stock },
+              { label: 'Expiring Soon', val: data.inventory_status.expiring_soon },
+              { label: 'Expired', val: data.inventory_status.expired },
             ].map((s, i) => (
               <div key={i} style={{ display: 'flex', justifyContent: 'space-between', fontSize: '0.82rem', color: '#475569' }}>
                 <span>{s.label}</span><strong>{s.val || 0}</strong>
@@ -264,7 +265,7 @@ const InventoryTab = () => {
             <tbody>
               {items.map((row, i) => {
                 const stock = parseInt(row.total_stock);
-                const statusLabel = stock === 0 ? '🔴 Out' : stock <= 10 ? '🟡 Low' : '🟢 OK';
+                const statusLabel = stock === 0 ? 'Out' : stock <= 10 ? 'Low' : 'OK';
                 return (
                   <tr key={i}>
                     <td><strong>{row.generic_name}</strong> {row.brand_name && <span style={{ color: '#94a3b8', fontSize: '0.78rem' }}>({row.brand_name})</span>}<br/><span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{row.strength}</span></td>
@@ -367,10 +368,10 @@ const ExpiryTab = () => {
   useEffect(() => { load(window); }, [window]);
 
   const getStatus = (days) => {
-    if (days < 0) return { label: '🔴 Expired', color: 'var(--danger)' };
-    if (days <= 30) return { label: '🟠 < 30 days', color: '#f97316' };
-    if (days <= 90) return { label: '🟡 < 90 days', color: '#f59e0b' };
-    return { label: '🟢 Safe', color: 'var(--success)' };
+    if (days < 0) return { label: 'Expired', color: 'var(--danger)' };
+    if (days <= 30) return { label: '< 30 days', color: '#f97316' };
+    if (days <= 90) return { label: '< 90 days', color: '#f59e0b' };
+    return { label: 'Safe', color: 'var(--success)' };
   };
 
   return (
@@ -467,7 +468,7 @@ const MovingTab = () => {
   return (
     <div>
       <div style={{ display: 'flex', gap: '0.5rem', marginBottom: '1.25rem' }}>
-        {[{ v: 'fast', l: '🚀 Fast Moving' }, { v: 'slow', l: '🐌 Slow Moving' }, { v: 'dead', l: '⚫ Dead Stock' }].map(o => (
+        {[{ v: 'fast', l: 'Fast Moving' }, { v: 'slow', l: 'Slow Moving' }, { v: 'dead', l: 'Dead Stock' }].map(o => (
           <button key={o.v} onClick={() => setSubTab(o.v)}
             className={`pill-toggle ${subTab === o.v ? 'active' : ''}`}>
             {o.l}
@@ -548,19 +549,31 @@ const AuditTab = ({ from, to }) => {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(false);
   const [actionFilter, setActionFilter] = useState('');
+  const [page, setPage] = useState(1);
+  const [limit] = useState(15);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
   
   const load = () => {
     setLoading(true);
-    reportsAPI.getAuditLogs({ from, to, action: actionFilter || undefined })
+    reportsAPI.getAuditLogs({ from, to, action: actionFilter || undefined, page, limit })
       .then(r => {
         // Structured response: { success, data, pagination }
-        setItems(Array.isArray(r.data?.data) ? r.data.data : Array.isArray(r.data) ? r.data : []);
+        if (r.data?.data) {
+          setItems(r.data.data);
+          setTotal(r.data.pagination?.total ?? r.data.data.length);
+          setTotalPages(r.data.pagination?.totalPages ?? 1);
+        } else {
+          setItems(Array.isArray(r.data) ? r.data : []);
+          setTotal(Array.isArray(r.data) ? r.data.length : 0);
+          setTotalPages(1);
+        }
         setLoading(false);
       })
-      .catch(() => { setItems([]); setLoading(false); });
+      .catch(() => { setItems([]); setTotal(0); setTotalPages(1); setLoading(false); });
   };
   
-  useEffect(() => { load(); }, [from, to, actionFilter]);
+  useEffect(() => { load(); }, [from, to, actionFilter, page, limit]);
   
   const ACTION_COLORS = {
     CREATE: '#15803d',
@@ -619,6 +632,14 @@ const AuditTab = ({ from, to }) => {
           </table>
         </div>
       )}
+      {/* ── PAGINATION ── */}
+      <Pagination
+        page={page}
+        totalPages={totalPages}
+        total={total}
+        label="events"
+        onPageChange={(p) => setPage(Math.min(Math.max(1, p), totalPages))}
+      />
     </div>
   );
 };

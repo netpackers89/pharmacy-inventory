@@ -1,4 +1,5 @@
 const db = require('../config/db');
+const { emitDataUpdated } = require('../socket');
 
 /*
  * SUPPLIERS — soft deactivation architecture.
@@ -119,6 +120,7 @@ exports.addSupplier = async (req, res) => {
       result.rows[0].supplier_id, null,
       { name, contact_person, phone, email });
 
+    emitDataUpdated('suppliers');
     res.status(201).json(result.rows[0]);
   } catch (err) {
     if (err.code === '23505') return res.status(409).json({ error: 'This supplier already exists.' });

@@ -2,7 +2,8 @@ import React, { useState, useEffect, useMemo } from 'react';
 import './Inventory.css';
 import {
   Boxes, FileText, Activity, Plus, CheckSquare, Download, Search,
-  ArrowLeft, Printer, ShoppingCart, AlertTriangle, PackageX, Loader2,
+  ArrowLeft, Printer, ShoppingCart, AlertTriangle, PackageX, Loader2, Upload,
+  X, Calculator, ArrowRight, CheckCircle2,
 } from 'lucide-react';
 import { inventoryAPI, medicinesAPI, suppliersAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
@@ -10,15 +11,56 @@ import { useToast } from '../context/ToastContext';
 import { useGuestGuard } from '../hooks/useGuestGuard';
 import { downloadCsv } from '../utils/csv';
 import { TableSkeleton, EmptyState, ErrorState } from '../components/Feedback';
+import { Pagination } from '../components/ui';
+import { socket } from '../services/socket';
 
 const PRIORITY_META = {
-  CRITICAL: { cls: 'badge-danger', label: 'Critical' },
-  HIGH:     { cls: 'badge-warning', label: 'High' },
-  MEDIUM:   { cls: 'badge-info',   label: 'Medium' },
-  NORMAL:   { cls: 'badge-neutral', label: 'Normal' },
+  URGENT:  { cls: 'badge-danger',  label: 'URGENT' },
+  HIGH:    { cls: 'badge-warning', label: 'HIGH' },
+  PLAN:    { cls: 'badge-info',    label: 'PLAN PURCHASE' },
+  MONITOR: { cls: 'badge-neutral', label: 'MONITOR' },
 };
 
-export const Inventory = () => {
+const MOVEMENT_META = {
+  FAST:     { cls: 'badge-warning', label: 'FAST' },
+  MEDIUM:   { cls: 'badge-info',    label: 'MEDIUM' },
+  SLOW:     { cls: 'badge-secondary', label: 'SLOW' },
+  'NO DATA': { cls: 'badge-neutral', label: 'NO DATA' },
+};
+
+const CONFIDENCE_META = {
+  HIGH:     { cls: 'badge-secondary', label: 'High' },
+  MEDIUM:   { cls: 'badge-warning',   label: 'Medium' },
+  LOW:      { cls: 'badge-warning',   label: 'Low' },
+  NO_DATA:  { cls: 'badge-neutral',   label: 'No data' },
+};
+
+const TREND_ICON = { INCREASING: '↑', DECREASING: '↓', STABLE: '→', NO_DATA: '' };
+
+const worksheetDefaults = (row) => ({
+  windowMonths: 3,
+  issued: Math.round(Number(row?.ads || 0) * 90) || Number(row?.issued_last_6_months || 0),
+  stockoutDays: 0,
+  stockOnHand: Number(row?.usable_stock ?? row?.current_stock ?? 0),
+  onOrder: 0,
+  leadTime: Number(row?.lead_time_days || 7) / 30.5,
+  bufferMonths: Math.round((Number(row?.coverage_days || 30) / 30.5) * 10) / 10,
+  unitPrice: Number(row?.last_buy_price || 0),
+  packSize: Math.max(1, Number(row?.units_per_package || 1)),
+});
+
+const calculateWorksheet = (input) => {
+  const denominator = Math.max(0.01, Number(input.windowMonths) - (Number(input.stockoutDays) / 30.5));
+  const amc = Number(input.issued) / denominator;
+  const safetyStock = amc * 0.5;
+  const reorderLevel = (amc * Number(input.leadTime)) + safetyStock;
+  const maxTarget = amc * Number(input.bufferMonths);
+  const rawOrder = Math.max(0, maxTarget - (Number(input.stockOnHand) + Number(input.onOrder)));
+  const orderQty = Math.ceil(rawOrder / Math.max(1, Number(input.packSize))) * Math.max(1, Number(input.packSize));
+  return { amc, safetyStock, reorderLevel, maxTarget, rawOrder, orderQty, totalCost: orderQty * Number(input.unitPrice) };
+};
+
+export const Inventory = ({ onNavigate }) => {
   const { user } = useAuth();
   const { toast } = useToast();
   const guard = useGuestGuard();
@@ -27,9 +69,29 @@ export const Inventory = () => {
   const [stockList, setStockList] = useState([]);
   const [movements, setMovements] = useState([]);
   const [whatToBuy, setWhatToBuy] = useState([]);
+  const [whatToBuyPage, setWhatToBuyPage] = useState(1);
+  const [whatToBuyTotal, setWhatToBuyTotal] = useState(0);
+  const [whatToBuyTotalPages, setWhatToBuyTotalPages] = useState(1);
+  const [whatToBuyPriorityCounts, setWhatToBuyPriorityCounts] = useState({});
+  const [liveTick, setLiveTick] = useState(0);
+  const [selectedPurchaseRow, setSelectedPurchaseRow] = useState(null);
+  const [worksheetInput, setWorksheetInput] = useState(null);
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  /* Pagination & Sorting states */
+  const [stockPage, setStockPage] = useState(1);
+  const [stockLimit] = useState(15);
+  const [stockTotal, setStockTotal] = useState(0);
+  const [stockTotalPages, setStockTotalPages] = useState(1);
+  const [stockSortBy, setStockSortBy] = useState('generic_name');
+  const [stockSortOrder, setStockSortOrder] = useState('asc');
+
+  const [movementsPage, setMovementsPage] = useState(1);
+  const [movementsLimit] = useState(15);
+  const [movementsTotal, setMovementsTotal] = useState(0);
+  const [movementsTotalPages, setMovementsTotalPages] = useState(1);
 
   const [medicines, setMedicines] = useState([]);
   const [suppliers, setSuppliers] = useState([]);
@@ -92,22 +154,62 @@ export const Inventory = () => {
             setLoading(false);
           });
       } else {
-        inventoryAPI.getStock()
-          .then(res => { if (!cancelled) { setStockList(Array.isArray(res.data) ? res.data : []); setLoading(false); } })
+        inventoryAPI.getStock({ page: stockPage, limit: stockLimit, sortBy: stockSortBy, sortOrder: stockSortOrder })
+          .then(res => {
+            if (cancelled) return;
+            if (Array.isArray(res.data)) {
+              setStockList(res.data);
+              setStockTotal(res.data.length);
+              setStockTotalPages(Math.max(1, Math.ceil(res.data.length / stockLimit)));
+            } else {
+              setStockList(Array.isArray(res.data?.data) ? res.data.data : []);
+              setStockTotal(res.data?.pagination?.total ?? res.data?.data?.length ?? 0);
+              setStockTotalPages(res.data?.pagination?.totalPages ?? 1);
+            }
+            setLoading(false);
+          })
           .catch(() => { if (!cancelled) { setLoadError(true); setLoading(false); } });
       }
     } else if (activeTab === 'movements') {
-      inventoryAPI.getMovements()
-        .then(res => { if (!cancelled) { setMovements(Array.isArray(res.data) ? res.data : []); setLoading(false); } })
+      inventoryAPI.getMovements({ page: movementsPage, limit: movementsLimit })
+        .then(res => {
+          if (cancelled) return;
+          if (Array.isArray(res.data)) {
+            setMovements(res.data);
+            setMovementsTotal(res.data.length);
+            setMovementsTotalPages(Math.max(1, Math.ceil(res.data.length / movementsLimit)));
+          } else {
+            setMovements(Array.isArray(res.data?.data) ? res.data.data : []);
+            setMovementsTotal(res.data?.pagination?.total ?? res.data?.data?.length ?? 0);
+            setMovementsTotalPages(res.data?.pagination?.totalPages ?? 1);
+          }
+          setLoading(false);
+        })
         .catch(() => { if (!cancelled) { setLoadError(true); setLoading(false); } });
     } else if (activeTab === 'whatToBuy') {
-      inventoryAPI.getWhatToBuy()
-        .then(res => { if (!cancelled) { setWhatToBuy(Array.isArray(res.data) ? res.data : []); setLoading(false); } })
+      inventoryAPI.getWhatToBuy({ page: whatToBuyPage, limit: 18 })
+        .then(res => { if (!cancelled) {
+          const payload = res.data;
+          setWhatToBuy(Array.isArray(payload) ? payload : (payload?.data || []));
+          setWhatToBuyTotal(payload?.pagination?.total ?? (Array.isArray(payload) ? payload.length : 0));
+          setWhatToBuyTotalPages(payload?.pagination?.totalPages ?? 1);
+          setWhatToBuyPriorityCounts(payload?.priorityCounts || {});
+          setLoading(false);
+        } })
         .catch(() => { if (!cancelled) { setLoadError(true); setLoading(false); } });
     }
 
     return () => { cancelled = true; };
-  }, [activeTab, selectedBinCardMedicine, stockBinCardView]);
+  }, [activeTab, selectedBinCardMedicine, stockBinCardView, stockPage, stockLimit, stockSortBy, stockSortOrder, movementsPage, movementsLimit, whatToBuyPage, liveTick]);
+
+  useEffect(() => {
+    if (!socket.connected) socket.connect();
+    const refresh = ({ topic } = {}) => {
+      if (['stock', 'sales', 'inventory', 'medicines', 'general'].includes(topic)) setLiveTick((tick) => tick + 1);
+    };
+    socket.on('data_updated', refresh);
+    return () => socket.off('data_updated', refresh);
+  }, []);
 
   useEffect(() => {
     medicinesAPI.getAll().then(res => setMedicines(Array.isArray(res.data) ? res.data : [])).catch(() => {});
@@ -167,10 +269,21 @@ export const Inventory = () => {
       toast.success(`Added ${units} × ${dosesPerUnit} dose(s) = ${packagingCalc.totalDoses} single doses`);
       setIsAddStockModalOpen(false);
       setStockForm(emptyStockForm);
-      // reload current view
+      // reload current view (pagination-aware)
       setLoading(true);
-      inventoryAPI.getStock()
-        .then(res => { setStockList(Array.isArray(res.data) ? res.data : []); setLoading(false); })
+      inventoryAPI.getStock({ page: stockPage, limit: stockLimit, sortBy: stockSortBy, sortOrder: stockSortOrder })
+        .then(res => {
+          if (Array.isArray(res.data)) {
+            setStockList(res.data);
+            setStockTotal(res.data.length);
+            setStockTotalPages(Math.max(1, Math.ceil(res.data.length / stockLimit)));
+          } else {
+            setStockList(Array.isArray(res.data?.data) ? res.data.data : []);
+            setStockTotal(res.data?.pagination?.total ?? 0);
+            setStockTotalPages(res.data?.pagination?.totalPages ?? 1);
+          }
+          setLoading(false);
+        })
         .catch(() => setLoading(false));
     } catch (err) {
       // Keep the modal open with values intact on failure.
@@ -230,8 +343,19 @@ export const Inventory = () => {
       setFullStockCountModalOpen(false);
       setFullStockCountRows([]);
       setLoading(true);
-      inventoryAPI.getStock()
-        .then(res => { setStockList(Array.isArray(res.data) ? res.data : []); setLoading(false); })
+      inventoryAPI.getStock({ page: stockPage, limit: stockLimit, sortBy: stockSortBy, sortOrder: stockSortOrder })
+        .then(res => {
+          if (Array.isArray(res.data)) {
+            setStockList(res.data);
+            setStockTotal(res.data.length);
+            setStockTotalPages(Math.max(1, Math.ceil(res.data.length / stockLimit)));
+          } else {
+            setStockList(Array.isArray(res.data?.data) ? res.data.data : []);
+            setStockTotal(res.data?.pagination?.total ?? 0);
+            setStockTotalPages(res.data?.pagination?.totalPages ?? 1);
+          }
+          setLoading(false);
+        })
         .catch(() => setLoading(false));
     } catch (err) {
       toast.error(err.response?.data?.error || 'Unable to save the physical count. Please try again.');
@@ -253,6 +377,13 @@ export const Inventory = () => {
     downloadCsv({ rows, dataset, notify: toast });
   };
 
+  const openPurchaseWorksheet = (row) => {
+    setSelectedPurchaseRow(row);
+    setWorksheetInput(worksheetDefaults(row));
+  };
+
+  const worksheet = worksheetInput ? calculateWorksheet(worksheetInput) : null;
+
   const tabs = [
     { id: 'stock', icon: <Boxes size={14} />, label: 'Stock List' },
     { id: 'movements', icon: <Activity size={14} />, label: 'History' },
@@ -273,6 +404,13 @@ export const Inventory = () => {
         </div>
         {!stockBinCardView && (
           <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
+            <button
+              className="btn btn-secondary"
+              onClick={() => onNavigate && onNavigate('import')}
+            >
+              <Upload size={16} />
+              <span className="hide-sm">Import</span>
+            </button>
             <button
               className="btn btn-secondary"
               onClick={() => guard(() => setIsAddStockModalOpen(true))}
@@ -325,6 +463,33 @@ export const Inventory = () => {
             <button className="btn btn-ghost" onClick={handleExport}>
               <Download size={16} /> Export CSV
             </button>
+          </div>
+
+          {/* ── SORT CONTROLS ── */}
+          <div className="inv-sort-row">
+            <span className="sort-label">Sort by:</span>
+            <select
+              className="form-control sort-select"
+              value={stockSortBy}
+              onChange={(e) => { setStockSortBy(e.target.value); setStockPage(1); }}
+              aria-label="Sort stock by"
+            >
+              <option value="generic_name">Name (A-Z)</option>
+              <option value="brand_name">Brand Name</option>
+              <option value="stock_on_hand">Stock Level</option>
+              <option value="nearest_expiry">Expiry Date</option>
+              <option value="last_received">Last Received</option>
+              <option value="created_date">Date Added</option>
+            </select>
+            <button
+              type="button"
+              className="btn btn-ghost btn-sm sort-order-btn"
+              onClick={() => setStockSortOrder(stockSortOrder === 'asc' ? 'desc' : 'asc')}
+              title={stockSortOrder === 'asc' ? 'Ascending' : 'Descending'}
+            >
+              {stockSortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+            </button>
+            <span className="sort-info">{stockTotal} medicine{stockTotal === 1 ? '' : 's'} · 15 per page</span>
           </div>
 
           <div className="table-container">
@@ -416,9 +581,14 @@ export const Inventory = () => {
                   ))}
                 </div>
 
-                <div className="table-footer">
-                  <span>{filteredStock.length} medicine{filteredStock.length === 1 ? '' : 's'}</span>
-                </div>
+                {/* ── PAGINATION ── */}
+                <Pagination
+                  page={stockPage}
+                  totalPages={stockTotalPages}
+                  total={stockTotal}
+                  label="medicines"
+                  onPageChange={(p) => setStockPage(Math.min(Math.max(1, p), stockTotalPages))}
+                />
               </>
             )}
           </div>
@@ -458,29 +628,31 @@ export const Inventory = () => {
                 )}
               </div>
 
-              {/* Summary cards */}
+              {/* Summary cards - Modern card format */}
               <div className="bincard-stats">
                 {[
-                  { label: 'Total Stock', value: binCardDetail.medicine.total_stock || 0 },
-                  { label: 'Available', value: binCardDetail.medicine.total_stock || 0 },
-                  { label: 'Reserved', value: 0 },
-                  { label: 'Batches', value: binCardDetail.batches?.length || 0 },
-                  {
-                    label: 'Avg Pur. Price',
-                    value: binCardDetail.batches?.length
-                      ? (binCardDetail.batches.reduce((sum, b) => sum + parseFloat(b.buy_price || 0), 0) / binCardDetail.batches.length).toFixed(2)
-                      : '0.00',
-                  },
+                  { label: 'Total Stock', value: binCardDetail.medicine.total_stock || 0, cls: 'info' },
+                  { label: 'Available', value: binCardDetail.medicine.total_stock || 0, cls: 'success' },
+                  { label: 'Batches', value: binCardDetail.batches?.length || 0, cls: '' },
                   {
                     label: 'Stock Value',
-                    value: binCardDetail.batches?.reduce((sum, b) => sum + (parseFloat(b.buy_price || 0) * parseInt(b.quantity || 0)), 0).toFixed(2) || '0.00',
+                    value: `ETB ${(binCardDetail.batches?.reduce((sum, b) => sum + (parseFloat(b.buy_price || 0) * parseInt(b.quantity || 0)), 0) || 0).toFixed(2)}`,
+                    cls: '',
                   },
                   {
-                    label: 'Expiring Soon', danger: true,
+                    label: 'Avg Cost',
+                    value: `ETB ${(binCardDetail.batches?.length
+                      ? (binCardDetail.batches.reduce((sum, b) => sum + parseFloat(b.buy_price || 0), 0) / binCardDetail.batches.length)
+                      : 0).toFixed(2)}`,
+                    cls: '',
+                  },
+                  {
+                    label: 'Expiring Soon',
                     value: binCardDetail.batches?.filter(b => new Date(b.expiry_date) <= new Date(new Date().setMonth(new Date().getMonth() + 3))).length || 0,
+                    cls: 'danger',
                   },
                 ].map(stat => (
-                  <div key={stat.label} className={`bincard-stat ${stat.danger ? 'danger' : ''}`}>
+                  <div key={stat.label} className={`bincard-stat ${stat.cls}`}>
                     <span>{stat.label}</span>
                     <strong>{stat.value}</strong>
                   </div>
@@ -603,9 +775,14 @@ export const Inventory = () => {
                   </tbody>
                 </table>
               </div>
-              <div className="table-footer">
-                <span>{filteredMovements.length} movements</span>
-              </div>
+              {/* ── PAGINATION ── */}
+              <Pagination
+                page={movementsPage}
+                totalPages={movementsTotalPages}
+                total={movementsTotal}
+                label="movements"
+                onPageChange={(p) => setMovementsPage(Math.min(Math.max(1, p), movementsTotalPages))}
+              />
             </>
           )}
         </div>
@@ -615,8 +792,8 @@ export const Inventory = () => {
       {activeTab === 'whatToBuy' && (
         <>
           <div className="wtb-priority-grid">
-            {['CRITICAL', 'HIGH', 'MEDIUM', 'NORMAL'].map(p => {
-              const count = whatToBuy.filter(w => w.priority === p).length;
+            {['URGENT', 'HIGH', 'PLAN', 'MONITOR'].map(p => {
+              const count = whatToBuyPriorityCounts[p] || 0;
               const meta = PRIORITY_META[p];
               return (
                 <div key={p} className="wtb-priority-card stagger-item">
@@ -642,7 +819,7 @@ export const Inventory = () => {
               <>
                 <div className="inv-filters-row" style={{ borderBottom: '1px solid var(--border)' }}>
                   <span style={{ fontSize: '0.84rem', color: 'var(--text-muted)', padding: '0 0.25rem' }}>
-                    Suggested reorder quantities based on min/max levels and consumption.
+                    Recommendations from real sales history: demand, stock cover, lead time, safety stock and reorder point.
                   </span>
                   <button className="btn btn-ghost" onClick={handleExport}>
                     <Download size={16} /> Export CSV
@@ -654,25 +831,30 @@ export const Inventory = () => {
                   <table className="custom-table">
                     <thead>
                       <tr>
-                        <th>Priority</th><th>Medicine</th><th>Strength</th><th>Stock</th>
-                        <th>Min</th><th>Max</th><th>Buy Qty</th><th>ABC</th><th>VEN</th>
-                        <th>Last Supplier</th><th>Est. Cost</th>
+                        <th>Priority</th><th>Medicine</th><th>Stock</th><th>Avg. Daily Sales</th>
+                        <th>Stock Cover</th><th>Movement</th><th>Reorder Point</th><th>Buy Qty</th>
+                        <th>ABC/VEN</th><th>Est. Cost</th><th>Confidence</th>
                       </tr>
                     </thead>
                     <tbody>
                       {whatToBuy.map((w) => (
-                        <tr key={w.medicine_id ?? w.generic_name}>
-                          <td><span className={`badge ${PRIORITY_META[w.priority]?.cls || 'badge-neutral'}`}>{PRIORITY_META[w.priority]?.label || w.priority}</span></td>
-                          <td className="cell-truncate"><strong className="td-strong">{w.generic_name}{w.brand_name ? ` (${w.brand_name})` : ''}</strong></td>
-                          <td>{w.strength}</td>
+                        <tr key={w.medicine_id ?? w.generic_name} className="wtb-clickable" onClick={() => openPurchaseWorksheet(w)}>
+                          <td>
+                            <span className={`badge ${PRIORITY_META[w.priority]?.cls || 'badge-neutral'}`}>{PRIORITY_META[w.priority]?.label || w.priority}</span>
+                            {w.expiry_risk && <small className="muted-line" style={{ color: 'var(--danger)' }}>Expiry risk</small>}
+                          </td>
+                          <td className="cell-truncate"><strong className="td-strong">{w.generic_name}{w.brand_name ? ` (${w.brand_name})` : ''}</strong>
+                            <small className="muted-line">{w.strength}{w.dosage_form ? ` · ${w.dosage_form}` : ''}</small>
+                          </td>
                           <td>{w.current_stock}</td>
-                          <td>{w.min_level}</td>
-                          <td>{w.max_level}</td>
-                          <td><strong className="buy-qty">{w.suggested_qty}</strong></td>
-                          <td>{w.abc_category || '—'}</td>
-                          <td>{w.ven_category || '—'}</td>
-                          <td className="cell-truncate">{w.last_supplier || '—'}</td>
-                          <td>{(w.suggested_qty && w.last_buy_price) ? `ETB ${(Number(w.suggested_qty) * Number(w.last_buy_price)).toFixed(2)}` : '—'}</td>
+                          <td>{w.ads > 0 ? (Number(w.ads) < 10 ? Number(w.ads).toFixed(1) : Math.round(Number(w.ads))) : '—'}{w.trend && w.trend !== 'NO_DATA' ? ` ${TREND_ICON[w.trend]}` : ''}</td>
+                          <td>{w.coverage_days !== null && w.coverage_days !== undefined ? `${w.coverage_days} days` : 'No sales'}</td>
+                          <td><span className={`badge ${MOVEMENT_META[w.movement]?.cls || 'badge-neutral'}`}>{w.movement || 'NO DATA'}</span></td>
+                          <td>{w.reorder_point ?? '—'}</td>
+                          <td><strong className="buy-qty">{w.suggested_qty || '—'}</strong></td>
+                          <td>{[w.abc_category, w.ven_category].filter(Boolean).join('/') || '—'}</td>
+                          <td>{(w.suggested_qty && w.last_buy_price) ? `ETB ${Number(w.estimated_cost || Number(w.suggested_qty) * Number(w.last_buy_price)).toFixed(2)}` : '—'}</td>
+                          <td><span className={`badge ${CONFIDENCE_META[w.confidence]?.cls || 'badge-neutral'}`}>{CONFIDENCE_META[w.confidence]?.label || w.confidence}</span></td>
                         </tr>
                       ))}
                     </tbody>
@@ -682,36 +864,108 @@ export const Inventory = () => {
                 {/* Mobile cards */}
                 <div className="mobile-card-list show-mobile-table">
                   {whatToBuy.map((w) => (
-                    <div key={w.medicine_id ?? w.generic_name} className="mobile-card stagger-item">
+                    <button type="button" key={w.medicine_id ?? w.generic_name} className="mobile-card stagger-item wtb-mobile-card" onClick={() => openPurchaseWorksheet(w)}>
                       <div className="mobile-card-head">
-                        <strong className="cell-truncate">{w.generic_name}{w.brand_name ? ` (${w.brand_name})` : ''}</strong>
+                        <strong className="cell-truncate">{w.generic_name}{w.strength ? ` ${w.strength}` : ''}{w.brand_name ? ` (${w.brand_name})` : ''}</strong>
                         <span className={`badge ${PRIORITY_META[w.priority]?.cls || 'badge-neutral'}`}>
                           {PRIORITY_META[w.priority]?.label || w.priority}
                         </span>
                       </div>
                       <div className="wtb-card-grid">
                         <span>Stock <strong>{w.current_stock}</strong></span>
-                        <span>Min <strong>{w.min_level}</strong></span>
-                        <span>Max <strong>{w.max_level}</strong></span>
-                        <span>Buy Qty <strong className="buy-qty">{w.suggested_qty}</strong></span>
+                        <span>Daily sales <strong>{w.ads > 0 ? (Number(w.ads) < 10 ? Number(w.ads).toFixed(1) : Math.round(Number(w.ads))) : '—'}{w.trend && w.trend !== 'NO_DATA' ? ` ${TREND_ICON[w.trend]}` : ''}</strong></span>
+                        <span>Cover <strong>{w.coverage_days !== null && w.coverage_days !== undefined ? `${w.coverage_days}d` : 'No sales'}</strong></span>
+                        <span>Buy Qty <strong className="buy-qty">{w.suggested_qty || '—'}</strong></span>
                         {(w.suggested_qty && w.last_buy_price) && (
-                          <span>Est. Cost <strong>ETB {(Number(w.suggested_qty) * Number(w.last_buy_price)).toFixed(2)}</strong></span>
+                          <span>Est. Cost <strong>ETB {Number(w.estimated_cost || Number(w.suggested_qty) * Number(w.last_buy_price)).toFixed(2)}</strong></span>
                         )}
                       </div>
                       <small className="muted-line">
-                        {[w.strength, w.last_supplier, w.abc_category && `ABC ${w.abc_category}`, w.ven_category && `VEN ${w.ven_category}`].filter(Boolean).join(' · ')}
+                        {[w.when_to_buy, w.movement && `${w.movement} mover`, w.expiry_risk && 'Expiry risk', w.abc_category && `ABC ${w.abc_category}`, w.ven_category && `VEN ${w.ven_category}`].filter(Boolean).join(' · ')}
                       </small>
-                    </div>
+                    </button>
                   ))}
                 </div>
 
                 <div className="table-footer">
-                  <span>{whatToBuy.length} recommendation{whatToBuy.length === 1 ? '' : 's'}</span>
+                  <span>{whatToBuyTotal} recommendation{whatToBuyTotal === 1 ? '' : 's'} requiring action</span>
                 </div>
+                <Pagination
+                  page={whatToBuyPage}
+                  totalPages={whatToBuyTotalPages}
+                  total={whatToBuyTotal}
+                  label="reorder recommendations"
+                  onPageChange={(p) => setWhatToBuyPage(Math.min(Math.max(1, p), whatToBuyTotalPages))}
+                />
               </>
             )}
           </div>
         </>
+      )}
+
+      {selectedPurchaseRow && worksheetInput && worksheet && (
+        <div className="modal-overlay" onClick={() => setSelectedPurchaseRow(null)}>
+          <div className="purchase-worksheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true" aria-label="Reorder worksheet">
+            <div className="purchase-worksheet__head">
+              <div>
+                <span className="worksheet-kicker"><Calculator size={14} /> DSM REORDER WORKSHEET</span>
+                <h2>{selectedPurchaseRow.generic_name}</h2>
+                <p>{selectedPurchaseRow.strength} · {selectedPurchaseRow.dosage_form} · {selectedPurchaseRow.last_supplier || 'Supplier not recorded'}</p>
+              </div>
+              <button type="button" className="lm__close" onClick={() => setSelectedPurchaseRow(null)} aria-label="Close"><X size={18} /></button>
+            </div>
+
+            <div className="worksheet-inputs">
+              <label>Window (months)<input type="number" min="1" step="1" value={worksheetInput.windowMonths} onChange={e => setWorksheetInput({ ...worksheetInput, windowMonths: e.target.value })} /></label>
+              <label>Issued / sold<input type="number" min="0" value={worksheetInput.issued} onChange={e => setWorksheetInput({ ...worksheetInput, issued: e.target.value })} /></label>
+              <label>Stockout days<input type="number" min="0" value={worksheetInput.stockoutDays} onChange={e => setWorksheetInput({ ...worksheetInput, stockoutDays: e.target.value })} /></label>
+              <label>Stock on hand<input type="number" min="0" value={worksheetInput.stockOnHand} onChange={e => setWorksheetInput({ ...worksheetInput, stockOnHand: e.target.value })} /></label>
+              <label>Already on order<input type="number" min="0" value={worksheetInput.onOrder} onChange={e => setWorksheetInput({ ...worksheetInput, onOrder: e.target.value })} /></label>
+              <label>Lead time (months)<input type="number" min="0.1" step="0.1" value={worksheetInput.leadTime} onChange={e => setWorksheetInput({ ...worksheetInput, leadTime: e.target.value })} /></label>
+              <label>Max buffer (months)<input type="number" min="1" step="0.5" value={worksheetInput.bufferMonths} onChange={e => setWorksheetInput({ ...worksheetInput, bufferMonths: e.target.value })} /></label>
+              <label>Unit price<input type="number" min="0" step="0.01" value={worksheetInput.unitPrice} onChange={e => setWorksheetInput({ ...worksheetInput, unitPrice: e.target.value })} /></label>
+              <label>Pack size<input type="number" min="1" step="1" value={worksheetInput.packSize} onChange={e => setWorksheetInput({ ...worksheetInput, packSize: e.target.value })} /></label>
+            </div>
+
+            {selectedPurchaseRow?.why && (
+              <div className="purchase-worksheet__why" role="note">
+                <AlertTriangle size={15} />
+                <div>
+                  <strong>Why this recommendation?</strong>
+                  <p>{selectedPurchaseRow.why}</p>
+                  {selectedPurchaseRow.when_to_buy && (
+                    <p style={{ marginTop: 2 }}><strong>When to buy:</strong> {selectedPurchaseRow.when_to_buy}</p>
+                  )}
+                </div>
+              </div>
+            )}
+
+            <div className="worksheet-flow">
+              {[
+                ['01', 'Adjusted monthly consumption', 'Issued ÷ (window − stockout days ÷ 30.5)', worksheet.amc, 'units / month'],
+                ['02', 'Safety stock', 'AMC × 0.5 months', worksheet.safetyStock, 'units'],
+                ['03', 'Reorder level', '(AMC × lead time) + safety stock', worksheet.reorderLevel, 'units'],
+                ['04', 'Max stock target', 'AMC × max policy buffer', worksheet.maxTarget, 'units'],
+                ['05', 'Order quantity', 'Target − (stock on hand + on order)', worksheet.orderQty, 'units / packs'],
+              ].map(([step, title, formula, value, unit]) => (
+                <div className="worksheet-step" key={step}>
+                  <span className="worksheet-step__number">{step}</span>
+                  <div><strong>{title}</strong><small>{formula}</small></div>
+                  <b>{Number(value).toFixed(title === 'Order quantity' ? 0 : 1)} <em>{unit}</em></b>
+                </div>
+              ))}
+            </div>
+
+            <div className={`worksheet-decision ${Number(worksheetInput.stockOnHand) <= worksheet.reorderLevel ? 'is-order' : 'is-ok'}`}>
+              {Number(worksheetInput.stockOnHand) <= worksheet.reorderLevel ? <AlertTriangle size={19} /> : <CheckCircle2 size={19} />}
+              <div><strong>{Number(worksheetInput.stockOnHand) <= worksheet.reorderLevel ? 'REORDER REQUIRED NOW' : 'DO NOT ORDER YET'}</strong><span>Current stock {Number(worksheetInput.stockOnHand).toFixed(0)} vs reorder level {worksheet.reorderLevel.toFixed(1)}</span></div>
+            </div>
+            <div className="worksheet-summary">
+              <span>Recommended purchase <strong>{worksheet.orderQty.toFixed(0)} units / packs</strong></span>
+              <span>Estimated cost <strong>ETB {worksheet.totalCost.toFixed(2)}</strong></span>
+            </div>
+          </div>
+        </div>
       )}
 
       {/* ── FULL STOCK COUNT MODAL ── */}

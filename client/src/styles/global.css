@@ -423,6 +423,46 @@ img, video, svg { max-width: 100%; }
 .pagination button.active { background: var(--primary); color: var(--primary-text); border-color: var(--primary); }
 .pagination button:disabled { opacity: 0.4; cursor: not-allowed; }
 
+/* ── Modern pagination (Pagination component) ── */
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  padding: 0.85rem 1rem;
+}
+.pagination-pages {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+}
+.pagination-page {
+  min-width: 34px;
+  height: 34px;
+  padding: 0 0.55rem;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text-secondary);
+  border-radius: 8px;
+  font-size: 0.82rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+.pagination-page:hover:not(.active) { background: var(--surface-hover); border-color: var(--border-strong); }
+.pagination-page.active {
+  background: var(--primary);
+  color: var(--primary-text, #fff);
+  border-color: var(--primary);
+}
+.pagination-ellipsis { color: var(--text-muted); font-weight: 700; padding: 0 2px; }
+.pagination-info {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 /* ===================================================
    TABS
    =================================================== */
@@ -557,6 +597,17 @@ img, video, svg { max-width: 100%; }
   transition: border-color var(--transition-fast), box-shadow var(--transition-fast), background-color var(--transition-fast);
   min-height: 42px; /* touch target */
 }
+.form-control[type="date"],
+select.form-control {
+  appearance: none;
+  -webkit-appearance: none;
+  background-image: linear-gradient(45deg, transparent 50%, var(--text-muted) 50%), linear-gradient(135deg, var(--text-muted) 50%, transparent 50%);
+  background-position: calc(100% - 17px) 18px, calc(100% - 12px) 18px;
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 2.25rem;
+}
+select.form-control option { background: var(--surface); color: var(--text-main); }
 .form-control::placeholder { color: var(--text-faint); }
 .form-control:focus {
   border-color: var(--primary);
@@ -825,14 +876,28 @@ img, video, svg { max-width: 100%; }
    force horizontal overflow anywhere in the app.
    =================================================== */
 @media (max-width: 640px) {
-  /* Stat cards collapse to a single column on narrow phones so large
-     ETB amounts always have room to wrap naturally. */
+  /* Stat cards keep TWO columns on phones (compact type), and the
+     overflow-wrap guards below keep large ETB amounts from overflowing. */
   .dashboard-grid {
-    grid-template-columns: 1fr !important;
-    gap: 0.85rem;
+    grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
+    gap: 0.6rem;
+  }
+  .dashboard-grid > * { min-width: 0; }
+
+  /* Compact numeric type in stat cards so two columns stay readable */
+  .dashboard-grid .stat-value,
+  .dashboard-grid strong {
+    font-size: clamp(0.95rem, 4.2vw, 1.15rem);
   }
 
   html, body { overflow-x: hidden; }
+}
+
+/* Genuinely tiny phones — a single comfortable column */
+@media (max-width: 400px) {
+  .dashboard-grid {
+    grid-template-columns: 1fr !important;
+  }
 }
 
 /* Universal text-wrap guards for value-bearing elements */

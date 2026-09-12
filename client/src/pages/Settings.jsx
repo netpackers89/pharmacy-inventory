@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import "./Settings.css";
 import {
   Users,
@@ -19,6 +19,8 @@ import {
   AlertTriangle,
   ChevronDown,
   ChevronRight,
+  Trash2,
+  Lock,
 } from "lucide-react";
 import {
   usersAPI,
@@ -28,7 +30,7 @@ import {
 } from "../services/api";
 import { useAuth } from "../context/AuthContext";
 import { useToast } from "../context/ToastContext";
-import { StatusBadge, FilterTabs, ConfirmDialog } from "../components/ui";
+import { StatusBadge, FilterTabs, ConfirmDialog, Pagination } from "../components/ui";
 import { TableSkeleton, EmptyState, ErrorState } from "../components/Feedback";
 
 const TABS = [
@@ -840,7 +842,7 @@ const SuppliersPanel = () => {
 };
 
 // ─── CATEGORIES PANEL ─────────────────────────────────────────────────────────
-const EMPTY_CATEGORY = { name: "", description: "" };
+const EMPTY_CATEGORY = { name: "" };
 
 /*
  * CATEGORY & SUBCATEGORY MANAGEMENT — admin-only, soft deactivation.
@@ -849,6 +851,13 @@ const EMPTY_CATEGORY = { name: "", description: "" };
  */
 const CategoriesPanel = () => {
   const { toast } = useToast();
+  const { user } = useAuth();
+  /*
+   * Every category mutation is ADMIN-only on the server (requireAdmin).
+   * Showing write buttons to pharmacists/guests only produces confusing 403
+   * errors — the UI is therefore role-aware: read for everyone, write for admins.
+   */
+  const isAdmin = user?.role === "ADMIN";
   const [categories, setCategories] = useState([]);
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
@@ -871,6 +880,10 @@ const CategoriesPanel = () => {
   // Status confirmation { type: 'category'|'subcategory', id, name, status }
   const [confirmTarget, setConfirmTarget] = useState(null);
   const [confirmLoading, setConfirmLoading] = useState(false);
+
+  // Permanent-delete confirmation { id, name }
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   const load = () => {
     setLoading(true);
@@ -919,7 +932,8 @@ const CategoriesPanel = () => {
       mode: "edit",
       id: cat.category_id,
       originalName: cat.name,
-      form: { name: cat.name || "", description: cat.description || "" },
+      status: cat.status,
+      form: { name: cat.name || "" },
     });
   };
 
@@ -1032,6 +1046,26 @@ const CategoriesPanel = () => {
   const askToggleSub = (sub) =>
     setConfirmTarget({ type: "subcategory", id: sub.sub_category_id, name: sub.name, status: sub.status });
 
+  const askDeleteCategory = (cat) => setDeleteTarget({ id: cat.category_id, name: cat.name });
+
+  const confirmDelete = async () => {
+    if (!deleteTarget || deleting) return;
+    setDeleting(true);
+    try {
+      await categoriesAPI.remove(deleteTarget.id);
+      toast.success(`Category "${deleteTarget.name}" deleted`);
+      setDeleteTarget(null);
+      load();
+    } catch (err) {
+      toast.error(err.response?.data?.error || "Unable to delete the category. It may still be in use — try deactivating it instead.");
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const isDeletable = (cat) =>
+    !(cat.medicine_count > 0) && !((cat.sub_count ?? cat.sub_categories?.length ?? 0) > 0);
+
   return (
     <div>
       <div className="mgmt-header">
@@ -1041,9 +1075,15 @@ const CategoriesPanel = () => {
             Medicine classification. Inactive categories disappear from medicine forms but all existing records stay linked.
           </p>
         </div>
-        <button onClick={openAddCategory} className="settings-add-btn">
-          <Plus size={15} /> Add Category
-        </button>
+        {isAdmin ? (
+          <button onClick={openAddCategory} className="settings-add-btn">
+            <Plus size={15} /> Add Category
+          </button>
+        ) : (
+          <span className="form-hint" style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", fontWeight: 600 }}>
+            <Lock size={13} /> Read-only — category changes require an administrator account
+          </span>
+        )}
       </div>
 
       <div className="mgmt-toolbar">
@@ -1124,15 +1164,30 @@ const CategoriesPanel = () => {
                         <td>{cat.medicine_count ?? 0}</td>
                         <td><StatusBadge status={cat.status} /></td>
                         <td style={{ textAlign: "right", whiteSpace: "nowrap" }}>
-                          <button onClick={() => openEditCategory(cat)} className="tbl-action-btn edit">
-                            <Edit size={13} /> Edit
-                          </button>
-                          <button
-                            onClick={() => askToggleCategory(cat)}
-                            className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                          >
-                            {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                          </button>
+                          {isAdmin ? (
+                            <>
+                              <button onClick={() => openEditCategory(cat)} className="tbl-action-btn edit">
+                                <Edit size={13} /> Edit
+                              </button>
+                              <button
+                                onClick={() => askToggleCategory(cat)}
+                                className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                              >
+                                {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                              </button>
+                              {isDeletable(cat) && (
+                                <button
+                                  onClick={() => askDeleteCategory(cat)}
+                                  className="tbl-action-btn delete"
+                                  title="Permanently delete (no medicines or subcategories linked)"
+                                >
+                                  <Trash2 size={13} /> Delete
+                                </button>
+                              )}
+                            </>
+                          ) : (
+                            <span className="form-hint" style={{ fontSize: "0.7rem" }}>Admin only</span>
+                          )}
                         </td>
                       </tr>
 
@@ -1150,21 +1205,25 @@ const CategoriesPanel = () => {
                                 </span>
                                 <span style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem" }}>
                                   <StatusBadge status={sub.status} />
-                                  <button onClick={() => openEditSub(sub)} className="tbl-action-btn edit" style={{ fontSize: "0.72rem" }}>
-                                    Edit
-                                  </button>
-                                  <button
-                                    onClick={() => askToggleSub(sub)}
-                                    className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                                    style={{ fontSize: "0.72rem" }}
-                                  >
-                                    {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                                  </button>
+                                  {isAdmin && (
+                                    <>
+                                      <button onClick={() => openEditSub(sub)} className="tbl-action-btn edit" style={{ fontSize: "0.72rem" }}>
+                                        Edit
+                                      </button>
+                                      <button
+                                        onClick={() => askToggleSub(sub)}
+                                        className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                                        style={{ fontSize: "0.72rem" }}
+                                      >
+                                        {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                                      </button>
+                                    </>
+                                  )}
                                 </span>
                               </div>
                             ))}
 
-                            {cat.status === "ACTIVE" ? (
+                            {isAdmin && (cat.status === "ACTIVE" ? (
                               <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.6rem", maxWidth: 420 }}>
                                 <input
                                   className="form-control"
@@ -1173,6 +1232,7 @@ const CategoriesPanel = () => {
                                   value={subForms[cat.category_id] || ""}
                                   onChange={(e) => setSubForms((p) => ({ ...p, [cat.category_id]: e.target.value }))}
                                   onKeyDown={(e) => e.key === "Enter" && submitInlineSub(cat.category_id)}
+                                  aria-label={`New subcategory name for ${cat.name}`}
                                 />
                                 <button
                                   type="button"
@@ -1191,7 +1251,7 @@ const CategoriesPanel = () => {
                               <p className="form-hint" style={{ marginTop: "0.5rem" }}>
                                 Activate this category before adding new subcategories.
                               </p>
-                            )}
+                            ))}
                           </td>
                         </tr>
                       )}
@@ -1213,13 +1273,22 @@ const CategoriesPanel = () => {
                     {cat.sub_count ?? 0} subcategories · {cat.medicine_count ?? 0} medicines
                   </div>
                   <div style={{ display: "flex", gap: "0.4rem", marginTop: "0.7rem", flexWrap: "wrap" }}>
-                    <button onClick={() => openEditCategory(cat)} className="tbl-action-btn edit">Edit</button>
-                    <button
-                      onClick={() => askToggleCategory(cat)}
-                      className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                    >
-                      {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                    </button>
+                    {isAdmin ? (
+                      <>
+                        <button onClick={() => openEditCategory(cat)} className="tbl-action-btn edit">Edit</button>
+                        <button
+                          onClick={() => askToggleCategory(cat)}
+                          className={`tbl-action-btn ${cat.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                        >
+                          {cat.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                        </button>
+                        {isDeletable(cat) && (
+                          <button onClick={() => askDeleteCategory(cat)} className="tbl-action-btn delete">
+                            Delete
+                          </button>
+                        )}
+                      </>
+                    ) : null}
                     <button
                       type="button"
                       className="tbl-action-btn reset"
@@ -1238,18 +1307,22 @@ const CategoriesPanel = () => {
                             <StatusBadge status={sub.status} />
                           </span>
                           <span style={{ display: "flex", gap: "0.35rem" }}>
-                            <button onClick={() => openEditSub(sub)} className="tbl-action-btn edit" style={{ fontSize: "0.7rem" }}>Edit</button>
-                            <button
-                              onClick={() => askToggleSub(sub)}
-                              className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
-                              style={{ fontSize: "0.7rem" }}
-                            >
-                              {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
-                            </button>
+                            {isAdmin && (
+                              <>
+                                <button onClick={() => openEditSub(sub)} className="tbl-action-btn edit" style={{ fontSize: "0.7rem" }}>Edit</button>
+                                <button
+                                  onClick={() => askToggleSub(sub)}
+                                  className={`tbl-action-btn ${sub.status === "ACTIVE" ? "deactivate" : "activate"}`}
+                                  style={{ fontSize: "0.7rem" }}
+                                >
+                                  {sub.status === "ACTIVE" ? "Deactivate" : "Activate"}
+                                </button>
+                              </>
+                            )}
                           </span>
                         </div>
                       ))}
-                      {cat.status === "ACTIVE" && (
+                      {isAdmin && cat.status === "ACTIVE" && (
                         <div style={{ display: "flex", gap: "0.5rem", marginTop: "0.6rem" }}>
                           <input
                             className="form-control"
@@ -1258,12 +1331,14 @@ const CategoriesPanel = () => {
                             value={subForms[cat.category_id] || ""}
                             onChange={(e) => setSubForms((p) => ({ ...p, [cat.category_id]: e.target.value }))}
                             onKeyDown={(e) => e.key === "Enter" && submitInlineSub(cat.category_id)}
+                            aria-label={`New subcategory name for ${cat.name}`}
                           />
                           <button
                             type="button"
                             onClick={() => submitInlineSub(cat.category_id)}
                             className="settings-add-btn"
                             disabled={addingSubFor !== null}
+                            aria-label={`Add subcategory to ${cat.name}`}
                           >
                             {addingSubFor === cat.category_id ? <Loader2 size={13} className="spin" /> : <Plus size={13} />}
                           </button>
@@ -1302,23 +1377,13 @@ const CategoriesPanel = () => {
                     placeholder="e.g. Antibiotics"
                     value={catModal.form.name}
                     onChange={(e) => setCatModal({ ...catModal, form: { ...catModal.form, name: e.target.value } })}
-                  />
-                </div>
-                <div className="form-group full-width" style={{ marginTop: "0.9rem" }}>
-                  <label>Description</label>
-                  <textarea
-                    rows="2"
-                    maxLength={300}
-                    className="form-control"
-                    placeholder="Optional short description…"
-                    value={catModal.form.description}
-                    onChange={(e) => setCatModal({ ...catModal, form: { ...catModal.form, description: e.target.value } })}
+                    aria-label="Category name"
                   />
                 </div>
                 <div style={{ marginTop: "0.9rem" }}>
                   <span className="form-hint">
                     Status:{" "}
-                    <StatusBadge status={catModal.mode === "add" ? "ACTIVE" : undefined} />
+                    <StatusBadge status={catModal.mode === "add" ? "ACTIVE" : catModal.status} />
                     {catModal.mode === "add" && " (new categories start active)"}
                   </span>
                   {catModal.mode === "edit" && (
@@ -1412,6 +1477,18 @@ const CategoriesPanel = () => {
         confirmLabel={confirmTarget?.status === "ACTIVE" ? "Deactivate" : "Activate"}
         onConfirm={confirmStatusChange}
         onCancel={() => !confirmLoading && setConfirmTarget(null)}
+      />
+
+      {/* Permanent-delete confirmation — only for categories with no linked medicines/subcategories */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        danger
+        loading={deleting}
+        title="Delete Category?"
+        message={`"${deleteTarget?.name}" has no linked medicines or subcategories, so it can be permanently deleted. This cannot be undone.`}
+        confirmLabel="Delete"
+        onConfirm={confirmDelete}
+        onCancel={() => !deleting && setDeleteTarget(null)}
       />
     </div>
   );
@@ -1593,7 +1670,10 @@ const AuditPanel = () => {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [page, setPage] = useState(1);
-  const [pagination, setPagination] = useState({ page: 1, limit: 50, total: 0, totalPages: 0 });
+  // Page size is selectable — the server paginates so huge datasets never
+  // reach the browser in one shot.
+  const [limit, setLimit] = useState(25);
+  const [pagination, setPagination] = useState({ page: 1, limit: 25, total: 0, totalPages: 0 });
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   // Extended server-side filters — the CSV export uses EXACTLY these values.
@@ -1627,12 +1707,12 @@ const AuditPanel = () => {
     loadFilters();
   }, []);
 
-  const load = (pageNum = page) => {
+  const load = (pageNum = page, pageLimit = limit) => {
     setLoading(true);
     setLoadError(false);
     import("../services/api").then(({ default: api }) => {
       api
-        .get("/audit-logs", { params: { page: pageNum, limit: 50, ...activeFilters } })
+        .get("/audit-logs", { params: { page: pageNum, limit: pageLimit, ...activeFilters } })
         .then((r) => {
           const body = r.data || {};
           setLogs(Array.isArray(body.data) ? body.data : Array.isArray(body) ? body : []);
@@ -1650,7 +1730,17 @@ const AuditPanel = () => {
   useEffect(() => {
     load(page);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page]);
+  }, [page, limit]);
+
+  /* Any filter change restarts the dataset from page 1 (page size preserved).
+     The ref skips the mount run so the initial fetch happens exactly once. */
+  const firstFilterRun = useRef(true);
+  useEffect(() => {
+    if (firstFilterRun.current) { firstFilterRun.current = false; return; }
+    setPage(1);
+    load(1);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dateFrom, dateTo, actionFilter, moduleFilter, statusFilter, userFilter]);
 
   const exportCSV = () => {
     import("../services/api").then(({ reportsAPI }) => {
@@ -1803,11 +1893,29 @@ const AuditPanel = () => {
         </div>
 
         <div className="table-footer">
-          <span>Page {pagination.page} of {Math.max(1, pagination.totalPages)} · {pagination.total} record{pagination.total === 1 ? "" : "s"} · timestamps shown in your local timezone</span>
-          <div className="pagination">
-            <button onClick={() => setPage((p) => Math.max(1, p - 1))} disabled={pagination.page <= 1}>‹ Prev</button>
-            <button onClick={() => setPage((p) => Math.min(pagination.totalPages || 1, p + 1))} disabled={pagination.page >= pagination.totalPages}>Next ›</button>
+          <span>
+            Showing {pagination.total === 0 ? 0 : ((pagination.page - 1) * pagination.limit) + 1}–{Math.min(pagination.total, pagination.page * pagination.limit)} of {pagination.total} record{pagination.total === 1 ? "" : "s"} · timestamps in your local timezone
+          </span>
+          <div style={{ display: "flex", alignItems: "center", gap: "0.45rem" }}>
+            <label htmlFor="audit-per-page" style={{ fontSize: "0.78rem", color: "var(--text-muted)" }}>Per page</label>
+            <select
+              id="audit-per-page"
+              className="form-control"
+              style={{ maxWidth: 92, padding: "0.3rem 0.5rem" }}
+              value={limit}
+              onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }}
+              aria-label="Audit records per page"
+            >
+              {[25, 50, 100].map((n) => <option key={`audit-limit-${n}`} value={n}>{n} / page</option>)}
+            </select>
           </div>
+          <Pagination
+            page={pagination.page}
+            totalPages={Math.max(1, pagination.totalPages)}
+            total={pagination.total}
+            label="audit records"
+            onPageChange={(p) => setPage(Math.min(Math.max(1, p), Math.max(1, pagination.totalPages)))}
+          />
         </div>
       </div>
     </div>

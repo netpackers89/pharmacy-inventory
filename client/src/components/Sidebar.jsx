@@ -1,5 +1,5 @@
 import React from 'react';
-import { LayoutDashboard, Pill, Boxes, ShoppingCart, Activity, Settings as SettingsIcon, Truck, X, LogOut } from 'lucide-react';
+import { LayoutDashboard, Pill, Boxes, ShoppingCart, Activity, Settings as SettingsIcon, Truck, X, LogOut, Upload } from 'lucide-react';
 import { useAuth } from '../context/AuthContext';
 import './Sidebar.css';
 
@@ -10,6 +10,7 @@ export const Sidebar = ({ activePage, setActivePage, isOpen, onClose }) => {
     { id: 'dashboard', label: 'Dashboard',  icon: LayoutDashboard },
     { id: 'drugs',     label: 'Medicines',  icon: Pill },
     { id: 'inventory', label: 'Inventory',  icon: Boxes },
+    { id: 'import',    label: 'Import',     icon: Upload },
     { id: 'pos',       label: 'POS',        icon: ShoppingCart },
     { id: 'reports',   label: 'Reports',    icon: Activity },
     { id: 'settings',  label: 'Settings',   icon: SettingsIcon },

@@ -53,8 +53,9 @@ export const medicinesAPI = {
   update: (id, data) => api.put(`/medicines/${id}`, data),
   delete: (id) => api.delete(`/medicines/${id}`),
   import: (medicines) => api.post('/medicines/import', { medicines }),
-  previewImport: (medicines) => api.post('/medicines/import/preview', { medicines }),
-  confirmImport: (medicines) => api.post('/medicines/import/confirm', { medicines })
+  previewImport: (rows, mode = 'batch') => api.post('/medicines/import/preview', { rows, mode }),
+  confirmImport: (rows, mode = 'batch') => api.post('/medicines/import/confirm', { rows, mode }),
+  importTemplate: (params) => api.get('/medicines/import/template', { params })
 };
 
 export const inventoryAPI = {
@@ -62,9 +63,9 @@ export const inventoryAPI = {
   addStock: (data) => api.post('/inventory/stock', data),
   getBinCard: () => api.get('/inventory/bincard'),
   getBinCardIndex: (params) => api.get('/inventory/bincard-index', { params }),
-  getBinCardDetail: (medicine_id) => api.get(`/inventory/bincard/${medicine_id}`),
-  getWhatToBuy: () => api.get('/inventory/what-to-buy'),
-  getMovements: () => api.get('/inventory/movements'),
+  getBinCardDetail: (medicine_id, params) => api.get(`/inventory/bincard/${medicine_id}`, { params }),
+  getWhatToBuy: (params) => api.get('/inventory/what-to-buy', { params }),
+  getMovements: (params) => api.get('/inventory/movements', { params }),
   adjustStock: (data) => api.post('/inventory/adjust', data),
   adjustStockBulk: (data) => api.post('/inventory/adjust-bulk', data),
   getAlerts: () => api.get('/inventory/alerts')
@@ -102,6 +103,7 @@ export const categoriesAPI = {
   create: (data) => api.post('/categories', data),
   update: (id, data) => api.put(`/categories/${id}`, data),
   changeStatus: (id, status) => api.put(`/categories/${id}/status`, { status }),
+  remove: (id) => api.delete(`/categories/${id}`),
   addSubcategory: (category_id, data) => api.post(`/categories/${category_id}/subcategories`, data),
   updateSubcategory: (id, data) => api.put(`/categories/subcategories/${id}`, data),
   changeSubcategoryStatus: (id, status) => api.put(`/categories/subcategories/${id}/status`, { status })

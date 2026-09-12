@@ -2,6 +2,21 @@
    Management UI primitives — status filters, confirm dialog
    =================================================== */
 
+/* ── Realtime live indicator (app shell) ────────────────────────────────── */
+
+.live-indicator {
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  float: right;
+  font-size: 0.72rem; font-weight: 600;
+  color: #15803d;
+  background: rgba(22, 163, 74, 0.1);
+  padding: 0.2rem 0.6rem; border-radius: 999px;
+  margin-bottom: 0.5rem;
+}
+.live-dot { width: 7px; height: 7px; border-radius: 50%; background: #16a34a; }
+.live-dot.pulse { animation: livePulse 0.8s ease infinite; }
+@keyframes livePulse { 50% { transform: scale(1.6); opacity: 0.6; } }
+
 /* Filter tabs (segmented control) */
 .filter-tabs {
   display: inline-flex;

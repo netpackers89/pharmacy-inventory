@@ -1,16 +1,28 @@
 import React, { useState, useEffect, useMemo } from 'react';
 import './Drugs.css';
-import { Plus, Sparkles, Edit, Search, Check, Download, Pill as PillIcon, PackagePlus, Loader2 } from 'lucide-react';
+import { Plus, Sparkles, Edit, Search, Check, Download, Pill as PillIcon, PackagePlus, Loader2, BookOpen, LayoutGrid, List as ListIcon, Package, Trash2, Stethoscope } from 'lucide-react';
 import { medicinesAPI, suppliersAPI, aiAPI, categoriesAPI } from '../services/api';
+import { MedicineLearnModal } from '../components/MedicineLearnModal';
+import { MedicineImage } from '../components/MedicineImage';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useGuestGuard } from '../hooks/useGuestGuard';
 import { downloadCsv } from '../utils/csv';
 import { TableSkeleton, EmptyState, ErrorState } from '../components/Feedback';
+import { Pagination, ConfirmDialog } from '../components/ui';
+import { socket } from '../services/socket';
 
-const PAGE_SIZE = 10;
+const VIEW_PREF_KEY = 'pharm_drug_view';
+const DOSAGE_FORMS = ['Solid', 'Liquid', 'Semi-solid', 'Other'];
+const normalizeDosageForm = (value) => {
+  const form = String(value || '').toLowerCase();
+  if (/tablet|capsule|powder|patch|lozenge/.test(form)) return 'Solid';
+  if (/syrup|solution|suspension|drops|spray/.test(form)) return 'Liquid';
+  if (/cream|ointment|gel|lotion/.test(form)) return 'Semi-solid';
+  return 'Other';
+};
 
-export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
+export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImport }) => {
   const { user, isGuest } = useAuth();
   const { toast } = useToast();
   const guard = useGuestGuard();
@@ -24,6 +36,20 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
   const [loading, setLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
   const [page, setPage] = useState(1);
+  const [liveTick, setLiveTick] = useState(0);
+  const [limit, setLimit] = useState(18);
+  const [total, setTotal] = useState(0);
+  const [totalPages, setTotalPages] = useState(1);
+  const [sortBy, setSortBy] = useState('generic_name');
+  const [sortOrder, setSortOrder] = useState('asc');
+
+  /* Card / table view preference persists per browser. */
+  const [viewMode, setViewMode] = useState(() => localStorage.getItem(VIEW_PREF_KEY) || 'cards');
+  useEffect(() => { localStorage.setItem(VIEW_PREF_KEY, viewMode); }, [viewMode]);
+
+  /* Server-side filters (combined: category + subcategory + route + rx + status) */
+  const [filters, setFilters] = useState({ category_id: '', sub_category_id: '', dosage_form: '', route: '', prescription_type: '', status: '' });
+  const dosageForms = DOSAGE_FORMS;
 
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [isEditMode, setIsEditMode] = useState(false);
@@ -33,56 +59,12 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
   const [savingMedicine, setSavingMedicine] = useState(false);
   const [addInitialStock, setAddInitialStock] = useState(false);
 
-  const [isImportModalOpen, setIsImportModalOpen] = useState(false);
-  const [importLoading, setImportLoading] = useState(false);
-  const [importPreview, setImportPreview] = useState(null);
-  const [importResults, setImportResults] = useState(null);
+  /* Medicine learning card (Learn More) */
+  const [learnMedId, setLearnMedId] = useState(null);
 
-  const handleFileUpload = (e) => {
-    const file = e.target.files[0];
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = async (evt) => {
-      const text = evt.target.result;
-      const lines = text.split('\n').filter(l => l.trim() !== '');
-      if (lines.length < 2) return;
-      const headers = lines[0].split(',').map(h => h.trim());
-      const data = lines.slice(1).map(line => {
-        const values = line.split(',');
-        const obj = {};
-        headers.forEach((h, i) => obj[h] = values[i]?.trim());
-        return obj;
-      });
-
-      setImportLoading(true);
-      try {
-        const res = await medicinesAPI.previewImport(data);
-        setImportPreview(res.data);
-      } catch (err) {
-        toast.error('Unable to preview the import file.');
-      }
-      setImportLoading(false);
-    };
-    reader.readAsText(file);
-  };
-
-  const handleConfirmImport = async () => {
-    setImportLoading(true);
-    try {
-      const res = await medicinesAPI.confirmImport(importPreview);
-      setImportResults(res.data);
-      fetchMedicines();
-    } catch (err) {
-      toast.error('Import failed. Please check the file and try again.');
-    }
-    setImportLoading(false);
-  };
-
-  const closeImportModal = () => {
-    setIsImportModalOpen(false);
-    setImportPreview(null);
-    setImportResults(null);
-  };
+  /* Deactivate (soft delete) flow */
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   /* Debounce the search box → avoids a request per keystroke */
   useEffect(() => {
@@ -93,17 +75,40 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
     return () => clearTimeout(timer);
   }, [searchInput]);
 
+  const filterParams = useMemo(() => {
+    const p = {};
+    if (searchQuery) p.search = searchQuery;
+    if (filters.category_id) p.category_id = filters.category_id;
+    if (filters.sub_category_id) p.sub_category_id = filters.sub_category_id;
+      if (filters.dosage_form) p.dosage_form = filters.dosage_form;
+    if (filters.route) p.route = filters.route;
+    if (filters.prescription_type) p.prescription_type = filters.prescription_type;
+    if (filters.status) p.status = filters.status;
+    return p;
+  }, [searchQuery, filters]);
+
+  useEffect(() => {
+    if (!socket.connected) socket.connect();
+    const refresh = ({ topic } = {}) => {
+      if (['medicines', 'stock', 'sales', 'inventory', 'general'].includes(topic)) setLiveTick((tick) => tick + 1);
+    };
+    socket.on('data_updated', refresh);
+    return () => socket.off('data_updated', refresh);
+  }, []);
   const initialForm = {
     generic_name: '',
     brand_name: '',
     strength: '',
-    dosage_form: 'Tablet',
+    dosage_form: 'Solid',
     manufacturer: '',
     country: '',
+    image_url: '',
     route: 'Oral',
     prescription_type: 'OTC',
     category_id: '',
     sub_category_id: '',
+    mass: '',
+    mass_unit: 'mg',
     description: '',
     indications: '',
     contraindications: '',
@@ -128,7 +133,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
   const [formData, setFormData] = useState(initialForm);
 
   /*
-   * Medicine list fetching with race-condition protection:
+   * Server-side paginated fetching with race-condition protection:
    * only the LATEST request may update state; earlier responses
    * (e.g. a slow stale search) are discarded.
    */
@@ -137,25 +142,31 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
     setLoading(true);
     setLoadError(false);
 
-    medicinesAPI.getAll({ search: searchQuery })
+    medicinesAPI.getAll({ ...filterParams, page, limit, sortBy, sortOrder })
       .then(res => {
         if (cancelled) return;
-        const rows = res.data;
-        // Guard against non-array payloads so rendering never crashes.
-        setMedicines(Array.isArray(rows) ? rows : []);
+        const data = res.data;
+        if (Array.isArray(data)) {
+          // Backward compatibility: some deployments still return a plain array.
+          setMedicines(data);
+          setTotal(data.length);
+          setTotalPages(Math.max(1, Math.ceil(data.length / limit)));
+        } else {
+          setMedicines(Array.isArray(data.medicines) ? data.medicines : []);
+          setTotal(data.total ?? 0);
+          setTotalPages(data.totalPages ?? 1);
+        }
         setLoading(false);
       })
       .catch(() => {
         if (cancelled) return;
-        if (!cancelled) {
-          setLoadError(true);
-          setMedicines([]);
-          setLoading(false);
-        }
+        setLoadError(true);
+        setMedicines([]);
+        setLoading(false);
       });
 
     return () => { cancelled = true; };
-  }, [searchQuery]);
+  }, [filterParams, page, limit, sortBy, sortOrder, liveTick]);
 
   useEffect(() => {
     // Operational dropdowns: ACTIVE suppliers and ACTIVE categories only.
@@ -179,7 +190,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
     if (
       isEditMode &&
       assignedId &&
-      !list.some((c) => c.category_id === assignedId)
+      !list.some((c) => String(c.category_id) === String(assignedId))
     ) {
       list.push({
         category_id: assignedId,
@@ -193,13 +204,25 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
 
   const fetchMedicines = () => {
     setLoading(true);
-    medicinesAPI.getAll({ search: searchQuery })
+    medicinesAPI.getAll({ ...filterParams, page, limit, sortBy, sortOrder })
       .then(res => {
-        setMedicines(Array.isArray(res.data) ? res.data : []);
+        const data = res.data;
+        if (Array.isArray(data)) {
+          setMedicines(data);
+          setTotal(data.length);
+          setTotalPages(Math.max(1, Math.ceil(data.length / limit)));
+        } else {
+          setMedicines(Array.isArray(data.medicines) ? data.medicines : []);
+          setTotal(data.total ?? 0);
+          setTotalPages(data.totalPages ?? 1);
+        }
         setLoading(false);
       })
       .catch(() => setLoading(false));
   };
+
+  /* Server-side pagination state */
+  const safePage = Math.min(page, totalPages);
 
   // When category changes, filter subcategories
   useEffect(() => {
@@ -295,14 +318,17 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
       generic_name: med.generic_name || '',
       brand_name: med.brand_name || '',
       strength: med.strength || '',
-      dosage_form: med.dosage_form || 'Tablet',
+      dosage_form: normalizeDosageForm(med.dosage_form),
       manufacturer: med.manufacturer || '',
       country: med.country || '',
+      image_url: med.image_url || '',
       route: med.route || 'Oral',
       prescription_type: med.prescription_type || 'OTC',
       category_id: med.category_id || '',
       sub_category_id: med.sub_category_id || '',
       _assignedCategoryName: med.category_name || '',
+      mass: med.mass ?? '',
+      mass_unit: med.mass_unit || 'mg',
       description: med.description || '',
       indications: med.indications || '',
       contraindications: med.contraindications || '',
@@ -317,6 +343,28 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
     setIsModalOpen(true);
   };
 
+  /*
+   * Deactivate (soft delete): the API flips the record to INACTIVE so audit
+   * and movement history stay intact — the drug simply disappears from POS
+   * and new transactions.
+   */
+  const handleRequestDelete = (med) => guard(() => setDeleteTarget(med));
+
+  const confirmDeleteMedicine = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      await medicinesAPI.delete(String(deleteTarget.medicine_id));
+      toast.success(`${deleteTarget.generic_name || 'Drug'} deactivated.`);
+      setDeleteTarget(null);
+      fetchMedicines();
+    } catch (err) {
+      toast.error('Unable to deactivate drug: ' + (err.response?.data?.error || err.message));
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleSubmitForm = async (e) => {
     e.preventDefault();
     if (savingMedicine) return; // duplicate-submission guard
@@ -327,15 +375,35 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
       return;
     }
 
+    // Mass (weight) — optional, but when provided it must be a positive number
+    // with a valid unit. Kept strictly inside the Add/Edit medicine form.
+    const MASS_UNITS = ['mg', 'g', 'kg', 'mcg', 'μg', 'ug'];
+    if (formData.mass !== '' && formData.mass !== null && formData.mass !== undefined) {
+      const m = Number(formData.mass);
+      if (!Number.isFinite(m) || m <= 0) {
+        toast.warning('Mass (weight) must be a positive number.');
+        return;
+      }
+      if (!MASS_UNITS.includes(formData.mass_unit)) {
+        toast.warning('Please select a valid mass unit.');
+        return;
+      }
+    }
+
     setSavingMedicine(true);
     try {
       const payload = { ...formData };
+      // These fields are only UI state and must never be sent as medicine data.
+      delete payload._assignedCategoryName;
+      delete payload.user_id;
+      payload.generic_name = formData.generic_name.trim();
+      payload.strength = formData.strength.trim();
       payload.category_id = formData.category_id || null;
       payload.sub_category_id = formData.sub_category_id || null;
 
       if (isEditMode) {
         delete payload.initial_stock;
-        await medicinesAPI.update(editId, payload);
+        await medicinesAPI.update(String(editId), payload);
         toast.success('Drug updated successfully.');
       } else {
         if (!addInitialStock) {
@@ -356,14 +424,6 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
     }
   };
 
-  /* Client-side pagination over the filtered list */
-  const totalPages = Math.max(1, Math.ceil(medicines.length / PAGE_SIZE));
-  const safePage = Math.min(page, totalPages);
-  const pagedMedicines = useMemo(
-    () => medicines.slice((safePage - 1) * PAGE_SIZE, safePage * PAGE_SIZE),
-    [medicines, safePage]
-  );
-
   const handleExport = () => downloadCsv({
     rows: medicines,
     columns: [
@@ -381,8 +441,28 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
     notify: toast,
   });
 
-  const dosageForms = ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Cream', 'Ointment', 'Drops', 'Inhaler', 'Suppository', 'Powder', 'Patch'];
   const routes = ['Oral', 'IV', 'IM', 'Subcutaneous', 'Topical', 'Inhalation', 'Sublingual', 'Rectal', 'Ophthalmic', 'Otic'];
+
+  /* Subcategories for the FILTER row (independent from the form's list) */
+  const filterSubcategories = useMemo(() => {
+    if (!filters.category_id) return [];
+    // Compare as STRINGS: PostgreSQL returns bigint IDs as strings ("3"),
+    // the select sends string values too — strict number === string breaks.
+    const cat = categories.find((c) => String(c.category_id) === String(filters.category_id));
+    return cat?.sub_categories || [];
+  }, [categories, filters.category_id]);
+
+  const setFilter = (key, value) => {
+    setFilters((prev) => {
+      const next = { ...prev, [key]: value };
+      // Category changed → chained subcategory resets (they must work together).
+      if (key === 'category_id') next.sub_category_id = '';
+      return next;
+    });
+    setPage(1);
+  };
+
+  const anyFilter = filters.category_id || filters.sub_category_id || filters.dosage_form || filters.route || filters.prescription_type || filters.status;
 
   return (
     <div className="drugs-page">
@@ -393,7 +473,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
           <p>Permanent master records for every medicine in the pharmacy</p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
-          <button className="btn btn-secondary" onClick={() => guard(() => setIsImportModalOpen(true))}>
+          <button className="btn btn-secondary" onClick={() => (onNavigateImport ? onNavigateImport() : toast.info?.('Use the Import page in the sidebar.'))}>
             <Download size={15} />
             <span className="hide-sm">Import</span>
           </button>
@@ -404,21 +484,117 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
         </div>
       </div>
 
-      <div style={{ marginBottom: '1rem' }}>
+      <div className="drugs-toolbar">
         <div className="smart-search-input-wrap" style={{ maxWidth: '380px' }}>
           <Search size={15} />
           <input
             type="text"
-            placeholder="Search drugs by name…"
+            placeholder="Search by generic, brand or strength…"
             value={searchInput}
             onChange={(e) => setSearchInput(e.target.value)}
-            aria-label="Search drugs"
+            aria-label="Search medicines"
           />
+        </div>
+
+        {/* ── VIEW TOGGLE: modern cards / compact table ── */}
+        <div className="view-toggle" role="group" aria-label="View mode">
+          <button
+            type="button"
+            className={`view-toggle__btn ${viewMode === 'cards' ? 'active' : ''}`}
+            onClick={() => setViewMode('cards')}
+            title="Card view"
+            aria-pressed={viewMode === 'cards'}
+          >
+            <LayoutGrid size={15} />
+          </button>
+          <button
+            type="button"
+            className={`view-toggle__btn ${viewMode === 'table' ? 'active' : ''}`}
+            onClick={() => setViewMode('table')}
+            title="Table view"
+            aria-pressed={viewMode === 'table'}
+          >
+            <ListIcon size={15} />
+          </button>
         </div>
       </div>
 
+      {/* ── SERVER-SIDE FILTERS (work together) ── */}
+      <div className="drugs-filters">
+        <select className="form-control" style={{ maxWidth: 180 }} value={filters.category_id} onChange={(e) => setFilter('category_id', e.target.value)} aria-label="Filter by category">
+          <option value="">All Categories</option>
+          {categories.map((c) => <option key={`filter-category-${c.category_id}`} value={c.category_id}>{c.name}</option>)}
+        </select>
+        <select className="form-control" style={{ maxWidth: 180 }} value={filters.sub_category_id} onChange={(e) => setFilter('sub_category_id', e.target.value)} disabled={!filters.category_id} aria-label="Filter by subcategory">
+          <option value="">{filters.category_id ? 'All Subcategories' : 'All Subcategories'}</option>
+          {filterSubcategories.map((s) => <option key={`filter-subcategory-${s.sub_category_id}`} value={s.sub_category_id}>{s.name}</option>)}
+        </select>
+        <select className="form-control dosage-select" value={filters.dosage_form} onChange={(e) => setFilter('dosage_form', e.target.value)} aria-label="Filter by dosage form">
+          <option value="">All Dosage Forms</option>
+          {dosageForms.map((form) => <option key={form} value={form}>{form}</option>)}
+        </select>
+        <select className="form-control" style={{ maxWidth: 150 }} value={filters.route} onChange={(e) => setFilter('route', e.target.value)} aria-label="Filter by route">
+          <option value="">All Routes</option>
+          {routes.map((r) => <option key={`filter-route-${r}`} value={r}>{r}</option>)}
+        </select>
+        <select className="form-control" style={{ maxWidth: 150 }} value={filters.prescription_type} onChange={(e) => setFilter('prescription_type', e.target.value)} aria-label="Filter by prescription type">
+          <option value="">All Types</option>
+          {['OTC', 'PRESCRIPTION', 'CONTROLLED'].map((t) => <option key={`filter-rx-${t}`} value={t}>{t}</option>)}
+        </select>
+        <select className="form-control" style={{ maxWidth: 140 }} value={filters.status} onChange={(e) => setFilter('status', e.target.value)} aria-label="Filter by status">
+          <option value="">All Status</option>
+          {['ACTIVE', 'INACTIVE'].map((s) => <option key={`filter-status-${s}`} value={s}>{s}</option>)}
+        </select>
+        {anyFilter && (
+          <button className="btn btn-ghost btn-sm" onClick={() => { setFilters({ category_id: '', sub_category_id: '', dosage_form: '', route: '', prescription_type: '', status: '' }); setPage(1); }}>
+            Clear filters
+          </button>
+        )}
+      </div>
+
+      {/* ── SORT CONTROLS ── */}
+      <div className="drugs-sort-row">
+        <span className="sort-label">Sort by:</span>
+        <select
+          className="form-control sort-select"
+          value={sortBy}
+          onChange={(e) => { setSortBy(e.target.value); setPage(1); }}
+          aria-label="Sort medicines by"
+        >
+          <option value="generic_name">Name (A-Z)</option>
+          <option value="brand_name">Brand Name</option>
+          <option value="nearest_expiry">Expiry Date</option>
+          <option value="created_date">Date Added</option>
+          <option value="stock_on_hand">Stock Level</option>
+        </select>
+        <button
+          type="button"
+          className="btn btn-ghost btn-sm sort-order-btn"
+          onClick={() => setSortOrder(sortOrder === 'asc' ? 'desc' : 'asc')}
+          title={sortOrder === 'asc' ? 'Ascending' : 'Descending'}
+          aria-label={`Sort ${sortOrder === 'asc' ? 'ascending' : 'descending'}`}
+        >
+          {sortOrder === 'asc' ? '↑ Asc' : '↓ Desc'}
+        </button>
+        <span className="sort-info">{total} medicine{total === 1 ? '' : 's'} · 18 per page</span>
+      </div>
+
       <div className="table-container">
-        {loading ? (
+        {loading && viewMode === 'cards' ? (
+          <div className="medicine-card-grid" aria-busy="true">
+            {Array.from({ length: limit > 12 ? 12 : limit }).map((_, i) => (
+              <div key={`med-skeleton-${i}`} className="medicine-card medicine-card--skeleton">
+                <div className="skeleton" style={{ height: 132 }} />
+                <div style={{ padding: '0.9rem' }}>
+                  <div className="skeleton" style={{ width: '60%', height: '0.95rem' }} />
+                  <div className="skeleton" style={{ width: '45%', height: '0.7rem', marginTop: '0.5rem' }} />
+                  <div className="skeleton" style={{ width: '85%', height: '0.7rem', marginTop: '0.9rem' }} />
+                  <div className="skeleton" style={{ width: '50%', height: '1.4rem', marginTop: '0.9rem', borderRadius: 8 }} />
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : loading ? (
           <TableSkeleton rows={8} cols={[26, 18, 16, 12, 12, 12]} />
         ) : loadError ? (
           <ErrorState
@@ -434,6 +610,95 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
             actionLabel={searchQuery ? 'Clear Filters' : undefined}
             onAction={searchQuery ? () => setSearchInput('') : undefined}
           />
+        ) : viewMode === 'cards' ? (
+          <div className="medicine-card-grid">
+            {medicines.map((med) => (
+              <article
+                key={`medicine-${med.medicine_id}`}
+                className="medicine-card stagger-item"
+                role="button"
+                tabIndex={0}
+                aria-label={`View details for ${med.brand_name || med.generic_name}`}
+                onClick={() => setLearnMedId(med.medicine_id)}
+                onKeyDown={(e) => {
+                  if (e.key === 'Enter' || e.key === ' ') {
+                    e.preventDefault();
+                    setLearnMedId(med.medicine_id);
+                  }
+                }}
+              >
+                <div className="medicine-card__media">
+                  <MedicineImage className="medicine-card__image" src={med.image_url} alt={med.generic_name} />
+                  <div className="medicine-card__scrim" aria-hidden="true" />
+                  <span className={`medicine-card__status ${med.status === 'ACTIVE' ? '' : 'inactive'}`}>
+                    {med.status === 'ACTIVE' ? 'Active' : (med.status || 'Inactive')}
+                  </span>
+                </div>
+
+                {/* Expanding white panel — slides up on hover to reveal the indication */}
+                <div className="medicine-card__panel">
+                  <h3 className="medicine-card__title">{med.brand_name || med.generic_name}</h3>
+                  <p className="medicine-card__subtitle">
+                    {med.generic_name}{med.strength ? ` • ${med.strength}` : ''}{med.dosage_form ? ` • ${med.dosage_form}` : ''}
+                  </p>
+
+                  <div className="medicine-card__more">
+                    <p className="medicine-card__indication">
+                      <span className="medicine-card__indication-label">
+                        <Stethoscope size={11} /> Indication
+                      </span>
+                      {med.indications || med.description || 'No indication recorded yet — add one via Edit.'}
+                    </p>
+                    {(med.category_name || med.sub_category_name || med.route || med.manufacturer) && (
+                      <div className="medicine-card__chips">
+                        {med.category_name && <span className="chip chip--primary">{med.category_name}</span>}
+                        {med.sub_category_name && <span className="chip chip--tint">{med.sub_category_name}</span>}
+                        {med.route && <span className="chip">{med.route}</span>}
+                        {med.manufacturer && <span className="chip">{med.manufacturer}</span>}
+                      </div>
+                    )}
+                  </div>
+
+                  <div className="medicine-card__footer">
+                    <div className="medicine-card__stats">
+                      <span>
+                        <Package size={13} /> {med.active_batches || 0} batch{(med.active_batches || 0) === 1 ? '' : 'es'}
+                      </span>
+                      <span className={parseInt(med.stock_on_hand) === 0 ? 'stat-danger' : (parseInt(med.stock_on_hand) < (parseInt(med.reorder_level) || 10) ? 'stat-warning' : '')}>
+                        ≈ {med.stock_on_hand || 0} stock
+                      </span>
+                    </div>
+                    <div className="medicine-card__actions">
+                      <button
+                        className="medicine-card__icon-btn is-info"
+                        title="View details"
+                        aria-label="View details"
+                        onClick={(e) => { e.stopPropagation(); setLearnMedId(med.medicine_id); }}
+                      >
+                        <BookOpen size={14} />
+                      </button>
+                      <button
+                        className="medicine-card__icon-btn"
+                        title="Edit drug"
+                        aria-label="Edit drug"
+                        onClick={(e) => { e.stopPropagation(); guard(() => handleOpenEditModal(med)); }}
+                      >
+                        <Edit size={14} />
+                      </button>
+                      <button
+                        className="medicine-card__icon-btn danger"
+                        title="Deactivate drug"
+                        aria-label="Deactivate drug"
+                        onClick={(e) => { e.stopPropagation(); handleRequestDelete(med); }}
+                      >
+                        <Trash2 size={14} />
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              </article>
+            ))}
+          </div>
         ) : (
           <>
             {/* Desktop / tablet table */}
@@ -446,8 +711,8 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                   </tr>
                 </thead>
                 <tbody>
-                  {pagedMedicines.map((med) => (
-                    <tr key={med.medicine_id}>
+                  {medicines.map((med) => (
+                    <tr key={`table-medicine-${med.medicine_id}`}>
                       <td>
                         <strong className="td-strong">{med.generic_name}</strong>
                         {med.brand_name && <small className="muted-line">{med.brand_name}</small>}
@@ -464,8 +729,14 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                         <span className={`badge ${med.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'}`}>{med.status}</span>
                       </td>
                       <td style={{ textAlign: 'right' }}>
+                        <button className="btn btn-secondary btn-sm" onClick={() => setLearnMedId(med.medicine_id)}>
+                          <BookOpen size={13} /> Learn
+                        </button>
                         <button className="btn btn-secondary btn-sm" onClick={() => guard(() => handleOpenEditModal(med))}>
                           <Edit size={13} /> Edit
+                        </button>
+                        <button className="btn btn-danger-ghost btn-sm" onClick={() => handleRequestDelete(med)} title="Deactivate drug">
+                          <Trash2 size={13} /> Delete
                         </button>
                       </td>
                     </tr>
@@ -476,8 +747,8 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
 
             {/* Mobile cards */}
             <div className="mobile-card-list show-mobile-table">
-              {pagedMedicines.map((med) => (
-                <div key={med.medicine_id} className="mobile-card stagger-item">
+              {medicines.map((med) => (
+                <div key={`mobile-medicine-${med.medicine_id}`} className="mobile-card stagger-item">
                   <div className="mobile-card-head">
                     <strong>{med.generic_name}{med.brand_name ? ` (${med.brand_name})` : ''}</strong>
                     <span className={`badge ${parseInt(med.stock_on_hand) === 0 ? 'badge-danger' : parseInt(med.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
@@ -493,94 +764,65 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                     <span className="badge badge-primary">{med.category_name || 'Uncategorized'}</span>
                   </div>
                   <div className="mobile-card-actions">
+                    <button className="btn btn-secondary btn-sm" onClick={() => setLearnMedId(med.medicine_id)}>
+                      <BookOpen size={13} /> Learn
+                    </button>
                     <button className="btn btn-secondary btn-sm" onClick={() => guard(() => handleOpenEditModal(med))}>
                       <Edit size={13} /> Edit Drug
+                    </button>
+                    <button className="btn btn-danger-ghost btn-sm" onClick={() => handleRequestDelete(med)}>
+                      <Trash2 size={13} /> Delete
                     </button>
                   </div>
                 </div>
               ))}
             </div>
-
-            <div className="table-footer">
-              <span>
-                {medicines.length} medicine{medicines.length === 1 ? '' : 's'} · page {safePage} of {totalPages}
-              </span>
-              <div className="pagination">
-                <button onClick={() => setPage(p => Math.max(1, p - 1))} disabled={safePage <= 1}>‹ Prev</button>
-                {Array.from({ length: totalPages }).slice(0, 7).map((_, i) => (
-                  <button key={i} className={safePage === i + 1 ? 'active' : ''} onClick={() => setPage(i + 1)}>
-                    {i + 1}
-                  </button>
-                ))}
-                {totalPages > 7 && <span style={{ padding: '0 4px', alignSelf: 'center' }}>…</span>}
-                <button onClick={() => setPage(p => Math.min(totalPages, p + 1))} disabled={safePage >= totalPages}>Next ›</button>
-              </div>
-              <button className="btn btn-ghost" onClick={handleExport}>
-                <Download size={15} /> Export CSV
-              </button>
-            </div>
           </>
+        )}
+
+        {/* ── SHARED PAGINATION (cards + table) ── */}
+        {!loading && !loadError && medicines.length > 0 && (
+          <div className="drugs-pagination-bar">
+            <div className="drugs-per-page">
+              <label htmlFor="drug-per-page">Per page</label>
+              <select
+                id="drug-per-page"
+                className="form-control"
+                style={{ maxWidth: 92, padding: '0.3rem 0.5rem' }}
+                value={limit}
+                onChange={(e) => { setLimit(Number(e.target.value)); setPage(1); }}
+                aria-label="Medicines per page"
+              >
+                {[18, 36, 72].map((n) => <option key={`limit-${n}`} value={n}>{n} / page</option>)}
+              </select>
+            </div>
+            <Pagination
+              page={safePage}
+              totalPages={totalPages}
+              total={total}
+              label="medicines"
+              onPageChange={(p) => setPage(Math.min(Math.max(1, p), totalPages))}
+            />
+            <button className="btn btn-ghost" onClick={handleExport}>
+              <Download size={15} /> Export CSV
+            </button>
+          </div>
         )}
       </div>
 
 
-      {/* ── IMPORT MODAL ── */}
-      {isImportModalOpen && (
-        <div className="modal-overlay">
-          <div className="modal-card" style={{ maxWidth: '800px' }}>
-            <div className="modal-header">
-              <h2>Import Medicines</h2>
-              <button className="modal-close-btn" onClick={closeImportModal}>×</button>
-            </div>
-            {!importPreview && !importResults && (
-              <div className="import-dropzone dot-grid">
-                <p>Upload CSV File</p>
-                <input type="file" accept=".csv" onChange={handleFileUpload} aria-label="CSV file" />
-              </div>
-            )}
-            {importLoading && (
-              <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-muted)' }}>Loading preview…</div>
-            )}
-            {importPreview && !importResults && !importLoading && (
-              <div>
-                <div className="table-scroll-wrap">
-                  <table className="custom-table" style={{ minWidth: 480 }}>
-                    <thead>
-                      <tr><th>Row</th><th>Medicine</th><th>Batch</th><th>Qty</th><th>Decision</th></tr>
-                    </thead>
-                    <tbody>
-                      {importPreview.map((row, i) => (
-                        <tr key={i}>
-                          <td>{row.Row || i+1}</td>
-                          <td className="cell-truncate">{row.Medicine}</td>
-                          <td>{row.Batch}</td>
-                          <td>{row.Qty}</td>
-                          <td><small className="muted-line">{row.Decision}</small></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-                <div className="confirm-actions" style={{ marginTop: '1.25rem' }}>
-                  <button className="btn btn-primary" onClick={handleConfirmImport}>Confirm Import</button>
-                </div>
-              </div>
-            )}
-            {importResults && (
-              <div className="empty-state">
-                <div className="empty-state__icon" style={{ color: 'var(--success)', borderColor: 'var(--success-border)' }}>
-                  <Check size={26} />
-                </div>
-                <div className="empty-state__title">Import Successful</div>
-                <div className="empty-state__desc">{importResults.message || 'Records imported.'}</div>
-                <div className="empty-state__action">
-                  <button className="btn btn-secondary" onClick={closeImportModal}>Close</button>
-                </div>
-              </div>
-            )}
-          </div>
-        </div>
-      )}
+
+      {/* ── DEACTIVATE CONFIRMATION ── */}
+      <ConfirmDialog
+        open={Boolean(deleteTarget)}
+        danger
+        title="Deactivate this drug?"
+        message={`"${deleteTarget?.generic_name || 'This drug'}" will be marked INACTIVE and removed from POS and new transactions. Historical records are preserved.`}
+        confirmLabel="Deactivate"
+        loading={deleting}
+        onConfirm={confirmDeleteMedicine}
+        onCancel={() => { if (!deleting) setDeleteTarget(null); }}
+      />
 
       {/* ── ADD / EDIT MODAL ── */}
       {isModalOpen && (
@@ -612,10 +854,25 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                       onChange={e => setFormData({ ...formData, strength: e.target.value })} />
                   </div>
                   <div className="form-group">
+                    <label>Mass / Weight</label>
+                    <div style={{ display: 'flex', gap: '0.4rem' }}>
+                      <input type="number" min="0" step="0.001" className="form-control" placeholder="e.g. 500"
+                        value={formData.mass}
+                        onChange={e => setFormData({ ...formData, mass: e.target.value })} />
+                      <select className="form-control" style={{ maxWidth: '88px', flexShrink: 0 }} value={formData.mass_unit}
+                        onChange={e => setFormData({ ...formData, mass_unit: e.target.value })}>
+                        <option value="mg">mg</option>
+                        <option value="g">g</option>
+                        <option value="kg">kg</option>
+                        <option value="mcg">mcg</option>
+                      </select>
+                    </div>
+                  </div>
+                  <div className="form-group">
                     <label>Dosage Form *</label>
                     <select required className="form-control" value={formData.dosage_form}
                       onChange={e => setFormData({ ...formData, dosage_form: e.target.value })}>
-                      {dosageForms.map(f => <option key={f} value={f}>{f}</option>)}
+                      {DOSAGE_FORMS.map(f => <option key={`form-${f}`} value={f}>{f}</option>)}
                     </select>
                   </div>
                   <div className="form-group">
@@ -629,10 +886,15 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                       onChange={e => setFormData({ ...formData, country: e.target.value })} placeholder="e.g. Ethiopia" />
                   </div>
                   <div className="form-group">
+                    <label>Medicine Image URL</label>
+                    <input type="url" className="form-control" value={formData.image_url || ''}
+                      onChange={e => setFormData({ ...formData, image_url: e.target.value })} placeholder="https://…/augmentin.jpg" />
+                  </div>
+                  <div className="form-group">
                     <label>Route of Administration</label>
                     <select className="form-control" value={formData.route}
                       onChange={e => setFormData({ ...formData, route: e.target.value })}>
-                      {routes.map(r => <option key={r} value={r}>{r}</option>)}
+                      {routes.map(r => <option key={`route-${r}`} value={r}>{r}</option>)}
                     </select>
                   </div>
                   <div className="form-group">
@@ -646,11 +908,21 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                   </div>
                   <div className="form-group">
                     <label>Category</label>
-                    <select className="form-control" value={formData.category_id}
-                      onChange={e => setFormData({ ...formData, category_id: e.target.value })}>
-                      <option value="">— No Category —</option>
-                      {categoriesForForm.map(c => <option key={c.category_id} value={c.category_id}>{c.name}</option>)}
-                    </select>
+                    <div className="category-picker" role="listbox" aria-label="Medicine category">
+                      <button type="button" className={`category-tile category-tile--empty ${!formData.category_id ? 'selected' : ''}`}
+                        onClick={() => setFormData({ ...formData, category_id: '', sub_category_id: '' })}>
+                        <span className="category-tile__mark">+</span>
+                        <span>Uncategorized</span>
+                      </button>
+                      {categoriesForForm.map(c => (
+                        <button type="button" key={`form-category-${c.category_id}`}
+                          className={`category-tile ${String(formData.category_id) === String(c.category_id) ? 'selected' : ''}`}
+                          onClick={() => setFormData({ ...formData, category_id: String(c.category_id), sub_category_id: '' })}>
+                          <span className="category-tile__mark">{c.name.charAt(0).toUpperCase()}</span>
+                          <span>{c.name}</span>
+                        </button>
+                      ))}
+                    </div>
                   </div>
                   <div className="form-group">
                     <label>Subcategory</label>
@@ -658,7 +930,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                       onChange={e => setFormData({ ...formData, sub_category_id: e.target.value })}
                       disabled={!formData.category_id}>
                       <option value="">— No Subcategory —</option>
-                      {subcategories.map(s => <option key={s.sub_category_id} value={s.sub_category_id}>{s.name}</option>)}
+                      {subcategories.map(s => <option key={`form-subcategory-${s.sub_category_id}`} value={s.sub_category_id}>{s.name}</option>)}
                     </select>
                   </div>
                 </div>
@@ -740,7 +1012,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
                           <select required className="form-control" value={formData.initial_stock.supplier_id}
                             onChange={e => setFormData({ ...formData, initial_stock: { ...formData.initial_stock, supplier_id: e.target.value } })}>
                             <option value="">— Select Supplier —</option>
-                            {suppliers.map(s => <option key={s.supplier_id} value={s.supplier_id}>{s.name}</option>)}
+                            {suppliers.map(s => <option key={`form-supplier-${s.supplier_id}`} value={s.supplier_id}>{s.name}</option>)}
                           </select>
                         </div>
                         <div className="form-group">
@@ -823,6 +1095,9 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill }) => {
           </div>
         </div>
       )}
+
+      {/* ── MEDICINE LEARNING MODAL (Learn More) ── */}
+      {learnMedId && <MedicineLearnModal medicineId={learnMedId} onClose={() => setLearnMedId(null)} />}
     </div>
   );
 };

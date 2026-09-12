@@ -11,5 +11,6 @@ router.put('/:id', medicineController.updateMedicine);
 router.delete('/:id', medicineController.deleteMedicine);
 router.post('/import/preview', medicineController.previewImport);
 router.post('/import/confirm', medicineController.confirmImport);
+router.get('/import/template', medicineController.importTemplate);
 
 module.exports = router;

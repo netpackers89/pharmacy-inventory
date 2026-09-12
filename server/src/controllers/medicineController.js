@@ -1,24 +1,116 @@
 const db = require('../config/db');
+const importService = require('../services/importService');
 
-// Get all medicines with their calculated total stock from batches
+// Get all medicines with their calculated total stock from batches.
+// Supports OPTIONAL server-side pagination + filters (used by the Medicines
+// page card/table views). Without `page`, the full array is returned so
+// existing consumers (POS, reports, barcode lookup) keep working unchanged.
 exports.getAllMedicines = async (req, res) => {
     try {
+        const { search, category_id, sub_category_id, dosage_form, route, prescription_type, status, page, sortBy, sortOrder } = req.query;
+        const params = [];
+        const where = [];
+
+        if (search) {
+            params.push(`%${String(search).trim()}%`);
+            const p = params.length;
+            where.push(`(m.generic_name ILIKE $${p} OR m.brand_name ILIKE $${p} OR m.strength ILIKE $${p})`);
+        }
+        if (category_id) { params.push(Number(category_id)); where.push(`m.category_id = $${params.length}`); }
+        if (sub_category_id) { params.push(Number(sub_category_id)); where.push(`m.sub_category_id = $${params.length}`); }
+        if (dosage_form) {
+            const form = String(dosage_form).toLowerCase();
+            const formPatterns = {
+                solid: ['%tablet%', '%capsule%', '%powder%', '%patch%', '%lozenge%'],
+                liquid: ['%syrup%', '%solution%', '%suspension%', '%drops%', '%spray%'],
+                'semi-solid': ['%cream%', '%ointment%', '%gel%', '%lotion%'],
+            };
+            if (formPatterns[form]) {
+                params.push(formPatterns[form]);
+                where.push(`LOWER(m.dosage_form) LIKE ANY($${params.length}::text[])`);
+            } else if (form === 'other') {
+                params.push(['%tablet%', '%capsule%', '%powder%', '%patch%', '%lozenge%', '%syrup%', '%solution%', '%suspension%', '%drops%', '%spray%', '%cream%', '%ointment%', '%gel%', '%lotion%']);
+                where.push(`NOT (LOWER(m.dosage_form) LIKE ANY($${params.length}::text[]))`);
+            } else {
+                params.push(String(dosage_form));
+                where.push(`LOWER(m.dosage_form) = LOWER($${params.length})`);
+            }
+        }
+        if (route) { params.push(String(route)); where.push(`m.route = $${params.length}`); }
+        if (prescription_type) { params.push(String(prescription_type)); where.push(`m.prescription_type = $${params.length}`); }
+        if (status) { params.push(String(status).toUpperCase()); where.push(`m.status = $${params.length}`); }
+        const whereSql = where.length ? `WHERE ${where.join(' AND ')}` : '';
+
+        /* Sorting configuration */
+        const sortMap = {
+            generic_name: 'm.generic_name',
+            brand_name: 'm.brand_name',
+            created_date: 'm.created_at',
+            stock_on_hand: 'stock_on_hand',
+            nearest_expiry: 'nearest_expiry',
+        };
+        const sortColumn = sortMap[sortBy] || 'm.generic_name';
+        const order = sortOrder === 'desc' ? 'DESC' : 'ASC';
+
+        /* Server-side pagination mode (Medicines page card/table view). */
+        if (page) {
+            const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 24, 1), 100);
+            const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+
+            const countRes = await db.query(
+                `SELECT COUNT(*)::int AS total FROM medicines m ${whereSql}`, params
+            );
+            const total = countRes.rows[0].total;
+
+            const rows = await db.query(`
+                SELECT m.*,
+                       COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
+                       COUNT(DISTINCT b.batch_id) FILTER (WHERE b.status = 'ACTIVE') AS active_batches,
+                       MIN(b.expiry_date) FILTER (WHERE b.status = 'ACTIVE' AND b.expiry_date >= CURRENT_DATE AND b.stock_quantity > 0) AS nearest_expiry,
+                       c.name as category_name,
+                       sc.name as sub_category_name
+                FROM medicines m
+                LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
+                LEFT JOIN categories c ON m.category_id = c.category_id
+                LEFT JOIN sub_categories sc ON m.sub_category_id = sc.sub_category_id
+                ${whereSql}
+                GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.created_at,
+                         m.image_url, m.manufacturer, m.country, m.route, m.prescription_type,
+                         m.reorder_level, m.max_level, m.status, m.category_id, m.sub_category_id,
+                         m.description, m.indications, m.contraindications, m.side_effects, m.warnings,
+                         m.storage_conditions, m.updated_at, c.name, sc.name
+                ORDER BY ${sortColumn} ${order} NULLS LAST, m.generic_name ASC, m.medicine_id ASC
+                LIMIT ${limit} OFFSET ${(pageNum - 1) * limit}
+            `, params);
+
+            return res.json({
+                medicines: rows.rows,
+                total,
+                page: pageNum,
+                limit,
+                totalPages: Math.max(1, Math.ceil(total / limit)),
+            });
+        }
+
+        /* Legacy full-list mode (unchanged response shape). */
         const result = await db.query(`
             SELECT m.*, 
                    COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
+                   COUNT(DISTINCT b.batch_id) FILTER (WHERE b.status = 'ACTIVE') AS active_batches,
                    c.name as category_name,
                    sc.name as sub_category_name
             FROM medicines m
             LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
             LEFT JOIN categories c ON m.category_id = c.category_id
             LEFT JOIN sub_categories sc ON m.sub_category_id = sc.sub_category_id
+            ${whereSql}
             GROUP BY m.medicine_id, c.name, sc.name
             ORDER BY m.generic_name ASC
-        `);
+        `, params);
         res.json(result.rows);
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: 'Server Error' });
+        res.status(500).json({ error: 'Could not validate import', details: err?.message || 'Unknown server error' });
     }
 };
 
@@ -29,6 +121,8 @@ exports.getMedicineById = async (req, res) => {
         const result = await db.query(`
             SELECT m.*, 
                    COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
+                   COUNT(DISTINCT b.batch_id) FILTER (WHERE b.status = 'ACTIVE') AS active_batches,
+                   MIN(b.expiry_date) FILTER (WHERE b.status = 'ACTIVE' AND b.expiry_date >= CURRENT_DATE AND b.stock_quantity > 0) AS nearest_expiry,
                    c.name as category_name,
                    sc.name as sub_category_name
             FROM medicines m
@@ -45,7 +139,7 @@ exports.getMedicineById = async (req, res) => {
         res.json(result.rows[0]);
     } catch (err) {
         console.error(err);
-        res.status(500).json({ error: 'Server Error' });
+        res.status(400).json({ error: 'Could not confirm import', details: err?.message || 'Unknown import error' });
     }
 };
 
@@ -74,6 +168,8 @@ exports.addMedicine = async (req, res) => {
             storage_conditions,
             reorder_level,
             max_level,
+            mass,
+            mass_unit,
             initial_stock,
             user_id
         } = req.body;
@@ -97,9 +193,10 @@ exports.addMedicine = async (req, res) => {
             if (!normalized) {
                 throw new Error('Strength is required.');
             }
-            const strRegex = /^\d+(?:\.\d+)?\s*(?:mg|g|mcg|μg|ug|ml|l|iu|units?|meq|mmol|%)?(?:\/\d+(?:\.\d+)?\s*(?:mg|g|mcg|μg|ug|ml|l|iu|units?|meq|mmol|%)?)?$/i;
-            if (!strRegex.test(normalized.replace(/\s*\/\s*/g, '/'))) {
-                throw new Error('Strength must match standard pharmaceutical formats (e.g., 500 mg, 250mg, 5 mL, 100 IU).');
+            // Accept formats like: 500 mg, 250mg, 5 mL, 100 IU, 10%, 250mg/5mL, 1:1000, etc.
+            const strRegex = /^\d+(?:\.\d+)?\s*(?:%|mg|g|mcg|μ|ug|ml|l|iu|units?|meq|mmol)?(?:\s*\/\s*\d+(?:\.\d+)?\s*(?:%|mg|g|mcg|μ|ug|ml|l|iu|units?|meq|mmol)?)?$/i;
+            if (!strRegex.test(normalized)) {
+                throw new Error('Strength must match standard pharmaceutical formats (e.g., 500 mg, 250mg, 5 mL, 100 IU, 10%).');
             }
         }
 
@@ -117,21 +214,37 @@ exports.addMedicine = async (req, res) => {
             }
         }
 
+        const MASS_UNITS = ['mg', 'g', 'kg', 'mcg', 'μg', 'ug'];
+        let massValue = null;
+        let massUnitValue = null;
+        if (mass !== undefined && mass !== null && mass !== '') {
+            massValue = Number(mass);
+            if (!Number.isFinite(massValue) || massValue <= 0) {
+                throw new Error('Mass must be a positive number.');
+            }
+            massUnitValue = (mass_unit || 'mg').toLowerCase();
+            if (!MASS_UNITS.includes(massUnitValue)) {
+                throw new Error('Mass unit must be one of: mg, g, kg, mcg, ug.');
+            }
+        }
+
         // 1. Create Medicine
         const insertMed = `
             INSERT INTO medicines (
                 category_id, sub_category_id, generic_name, brand_name,
                 strength, dosage_form, manufacturer, country, route, prescription_type,
                 description, indications, contraindications, side_effects,
-                warnings, storage_conditions, reorder_level, max_level
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+                warnings, storage_conditions, reorder_level, max_level,
+                mass, mass_unit, image_url
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
             RETURNING medicine_id
         `;
         const medValues = [
             category_id || null, sub_category_id || null, generic_name, brand_name,
             strength, dosage_form, manufacturer || null, country || null, route, prescription_type,
             description, indications, contraindications, side_effects,
-            warnings, storage_conditions, reorder_level || 50, max_level || 500
+            warnings, storage_conditions, reorder_level || 50, max_level || 500,
+            massValue, massUnitValue, req.body.image_url || null
         ];
 
         const medResult = await client.query(insertMed, medValues);
@@ -187,7 +300,12 @@ exports.addMedicine = async (req, res) => {
     } catch (err) {
         await client.query('ROLLBACK');
         console.error(err);
-        res.status(500).json({ error: 'Failed to create medicine', details: err.message });
+        const msg = err?.message || '';
+        if (msg.includes('must be unique') || msg.includes('Strength must match') || msg.includes('must be atleast') || msg.includes('does not match') || msg.includes('Mass must be') || msg.includes('Mass unit must be') || msg.includes('Clinical Text') || msg === 'Strength is required') {
+            res.status(400).json({ error: msg, details: msg });
+        } else {
+            res.status(500).json({ error: 'Failed to create medicine', details: msg });
+        }
     } finally {
         client.release();
     }
@@ -198,12 +316,17 @@ exports.updateMedicine = async (req, res) => {
     const client = await db.getClient();
     try {
         await client.query('BEGIN');
-        const { id } = req.params;
+        const medicineId = Number.parseInt(req.params.id, 10);
+        if (!Number.isInteger(medicineId) || medicineId <= 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'Invalid medicine ID.' });
+        }
         const {
             category_id, sub_category_id, generic_name, brand_name,
             strength, dosage_form, manufacturer, country, route, prescription_type,
             description, indications, contraindications, side_effects,
-            warnings, storage_conditions, status, reorder_level, max_level, user_id
+            warnings, storage_conditions, status, reorder_level, max_level, mass, mass_unit, user_id
+            , image_url
         } = req.body;
 
         const current_user_id = req.user && req.user.user_id;
@@ -212,9 +335,31 @@ exports.updateMedicine = async (req, res) => {
             return res.status(401).json({ error: 'Authenticated staff account required' });
         }
 
-        // Validations for update
-        if (generic_name) {
-            const existing = await client.query('SELECT medicine_id FROM medicines WHERE LOWER(generic_name) = LOWER($1) AND medicine_id != $2', [generic_name, id]);
+        const target = await client.query(
+            'SELECT medicine_id, generic_name FROM medicines WHERE medicine_id = $1 FOR UPDATE',
+            [medicineId]
+        );
+        if (target.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Medicine not found' });
+        }
+
+        // Create rejects any matching generic name; update ignores only the
+        // row being edited. Existing databases may already contain duplicate
+        // legacy records, so unchanged names must remain editable.
+        const normalizedCurrentName = String(target.rows[0].generic_name || '').trim();
+        const normalizedName = generic_name === undefined || generic_name === null
+            ? normalizedCurrentName
+            : String(generic_name).trim();
+        const genericNameChanged = normalizedName.toLowerCase() !== normalizedCurrentName.toLowerCase();
+        if (genericNameChanged && normalizedName) {
+            const existing = await client.query(
+                `SELECT medicine_id
+                 FROM medicines
+                 WHERE LOWER(TRIM(generic_name)) = LOWER(TRIM($1::text))
+                   AND medicine_id <> $2::bigint`,
+                [normalizedName, medicineId]
+            );
             if (existing.rows.length > 0) {
                 throw new Error('Generic Name must be unique in the database.');
             }
@@ -225,9 +370,10 @@ exports.updateMedicine = async (req, res) => {
             if (!normalized) {
                 throw new Error('Strength is required.');
             }
-            const strRegex = /^\d+(?:\.\d+)?\s*(?:mg|g|mcg|μg|ug|ml|l|iu|units?|meq|mmol|%)?(?:\/\d+(?:\.\d+)?\s*(?:mg|g|mcg|μg|ug|ml|l|iu|units?|meq|mmol|%)?)?$/i;
-            if (!strRegex.test(normalized.replace(/\s*\/\s*/g, '/'))) {
-                throw new Error('Strength must match standard pharmaceutical formats (e.g., 500 mg, 250mg, 5 mL, 100 IU).');
+            // Accept formats like: 500 mg, 250mg, 5 mL, 100 IU, 10%, 250mg/5mL, 1:1000, etc.
+            const strRegex = /^\d+(?:\.\d+)?\s*(?:%|mg|g|mcg|μ|ug|ml|l|iu|units?|meq|mmol)?(?:\s*\/\s*\d+(?:\.\d+)?\s*(?:%|mg|g|mcg|μ|ug|ml|l|iu|units?|meq|mmol)?)?$/i;
+            if (!strRegex.test(normalized)) {
+                throw new Error('Strength must match standard pharmaceutical formats (e.g., 500 mg, 250mg, 5 mL, 100 IU, 10%).');
             }
         }
 
@@ -245,24 +391,65 @@ exports.updateMedicine = async (req, res) => {
             }
         }
 
+        const MASS_UNITS = ['mg', 'g', 'kg', 'mcg', 'μg', 'ug'];
+        let massValue = null;
+        let massUnitValue = null;
+        if (mass !== undefined && mass !== null && mass !== '') {
+            massValue = Number(mass);
+            if (!Number.isFinite(massValue) || massValue <= 0) {
+                throw new Error('Mass must be a positive number.');
+            }
+            massUnitValue = (mass_unit || 'mg').toLowerCase();
+            if (!MASS_UNITS.includes(massUnitValue)) {
+                throw new Error('Mass unit must be one of: mg, g, kg, mcg, ug.');
+            }
+        }
+
+        // Build UPDATE dynamically — only send the fields actually provided.
+        // This avoids NOT NULL conflicts on columns the client didn't touch, and
+        // keeps parameter indices in sync with the SET clause.
+        const setClauses = [];
+        const values = [];
+        let idx = 1;
+
+        const push = (sql, val) => { setClauses.push(`${sql} = $${idx}`); values.push(val); idx++; };
+
+        if (category_id !== undefined && category_id !== null && category_id !== '') push('category_id', Number(category_id));
+        if (sub_category_id !== undefined && sub_category_id !== null && sub_category_id !== '') push('sub_category_id', Number(sub_category_id));
+        if (generic_name !== undefined && generic_name !== null && generic_name !== '') push('generic_name', generic_name);
+        if (brand_name !== undefined && brand_name !== null && brand_name !== '') push('brand_name', brand_name);
+        if (strength !== undefined && strength !== null && strength !== '') push('strength', strength);
+        if (dosage_form !== undefined && dosage_form !== null && dosage_form !== '') push('dosage_form', dosage_form);
+        if (manufacturer !== undefined && manufacturer !== null && manufacturer !== '') push('manufacturer', manufacturer);
+        if (country !== undefined && country !== null && country !== '') push('country', country);
+        if (route !== undefined && route !== null && route !== '') push('route', route);
+        if (prescription_type !== undefined && prescription_type !== null && prescription_type !== '') push('prescription_type', prescription_type);
+        if (description !== undefined) push('description', description || null);
+        if (indications !== undefined) push('indications', indications || null);
+        if (contraindications !== undefined) push('contraindications', contraindications || null);
+        if (side_effects !== undefined) push('side_effects', side_effects || null);
+        if (warnings !== undefined) push('warnings', warnings || null);
+        if (storage_conditions !== undefined) push('storage_conditions', storage_conditions || null);
+        if (status !== undefined && status !== null && status !== '') push('status', String(status).toUpperCase());
+        if (reorder_level !== undefined && reorder_level !== null && reorder_level !== '') push('reorder_level', Number(reorder_level));
+        if (max_level !== undefined && max_level !== null && max_level !== '') push('max_level', Number(max_level));
+        if (massValue !== null) push('mass', massValue);
+        if (massUnitValue !== null) push('mass_unit', massUnitValue);
+        if (image_url !== undefined) push('image_url', image_url || null);
+
+        if (setClauses.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(400).json({ error: 'No fields to update. Provide at least one field to change.' });
+        }
+
+        setClauses.push(`updated_at = CURRENT_TIMESTAMP`);
         const updateMed = `
             UPDATE medicines
-            SET category_id = $1, sub_category_id = $2, generic_name = $3,
-                brand_name = $4, strength = $5, dosage_form = $6,
-                manufacturer = $7, country = $8, route = $9, prescription_type = $10,
-                description = $11, indications = $12, contraindications = $13, side_effects = $14,
-                warnings = $15, storage_conditions = $16, status = COALESCE($17, status),
-                reorder_level = $18, max_level = $19,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE medicine_id = $20
+            SET ${setClauses.join(', ')}
+            WHERE medicine_id = $${idx}
             RETURNING *
         `;
-        const values = [
-            category_id || null, sub_category_id || null, generic_name, brand_name,
-            strength, dosage_form, manufacturer || null, country || null, route, prescription_type,
-            description, indications, contraindications, side_effects,
-            warnings, storage_conditions, status, reorder_level || 50, max_level || 500, id
-        ];
+        values.push(medicineId);
 
         const result = await client.query(updateMed, values);
         if (result.rows.length === 0) {
@@ -270,14 +457,22 @@ exports.updateMedicine = async (req, res) => {
             return res.status(404).json({ error: 'Medicine not found' });
         }
         
-        await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_UPDATED', 'medicines', id, JSON.stringify({ generic_name, brand_name, description: `Updated ${generic_name} ${brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
+        await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_UPDATED', 'medicines', medicineId, JSON.stringify({ generic_name, brand_name, description: `Updated ${generic_name || 'unknown'} ${brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
 
         await client.query('COMMIT');
         res.json(result.rows[0]);
     } catch (err) {
         await client.query('ROLLBACK');
         console.error(err);
-        res.status(500).json({ error: 'Server Error' });
+
+        // Validation errors (thrown intentionally) → 400 with details.
+        // Database / unexpected errors → 500.
+        const msg = err?.message || '';
+        if (msg.includes('must be unique') || msg.includes('Strength must match') || msg.includes('must be atleast') || msg.includes('does not match') || msg.includes('Mass must be') || msg.includes('Mass unit must be') || msg.includes('Clinical Text') || msg === 'Strength is required' || msg === 'No fields to update.') {
+            res.status(400).json({ error: msg, details: msg });
+        } else {
+            res.status(500).json({ error: 'Server Error', details: msg });
+        }
     } finally {
         client.release();
     }
@@ -285,140 +480,80 @@ exports.updateMedicine = async (req, res) => {
 
 // Soft delete / deactivate medicine
 exports.deleteMedicine = async (req, res) => {
-    try {
-        const { id } = req.params;
-        await db.query(`UPDATE medicines SET status = 'INACTIVE' WHERE medicine_id = $1`, [id]);
-        res.json({ message: 'Medicine deactivated' });
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-};
-
-// Bulk Import Preview
-exports.previewImport = async (req, res) => {
-    try {
-        const { medicines } = req.body;
-        if (!medicines || !Array.isArray(medicines)) {
-            return res.status(400).json({ error: 'Invalid payload' });
-        }
-        
-        const previewResult = [];
-        
-        for (let i = 0; i < medicines.length; i++) {
-            const row = medicines[i];
-            const generic_name = (row.generic_name || '').trim().toLowerCase();
-            const brand_name = (row.brand_name || '').trim().toLowerCase();
-            const strength = (row.strength || '').trim().toLowerCase();
-            const dosage_form = (row.dosage_form || '').trim().toLowerCase();
-            const route = (row.route || '').trim().toLowerCase();
-            const batch_number = (row.batch_number || '').trim().toLowerCase();
-            
-            const medCheck = await db.query(`SELECT medicine_id FROM medicines WHERE LOWER(TRIM(generic_name))=$1 AND LOWER(TRIM(brand_name))=$2 AND LOWER(TRIM(strength))=$3 AND LOWER(TRIM(dosage_form))=$4 AND LOWER(TRIM(route))=$5`, [generic_name, brand_name, strength, dosage_form, route]);
-            
-            let decision = 'new_medicine_new_batch';
-            let medicine_id = null;
-            let batch_id = null;
-            
-            if (medCheck.rows.length > 0) {
-                medicine_id = medCheck.rows[0].medicine_id;
-                
-                const batchCheck = await db.query(`SELECT batch_id FROM batches WHERE medicine_id=$1 AND LOWER(TRIM(batch_number))=$2`, [medicine_id, batch_number]);
-                if (batchCheck.rows.length > 0) {
-                    batch_id = batchCheck.rows[0].batch_id;
-                    decision = 'existing_medicine_existing_batch';
-                } else {
-                    decision = 'existing_medicine_new_batch';
-                }
-            }
-            
-            previewResult.push({
-                row_index: i,
-                medicine_name: `${row.generic_name} ${row.brand_name}`,
-                batch_number: row.batch_number,
-                quantity: row.quantity,
-                decision,
-                medicine_id,
-                batch_id
-            });
-        }
-        
-        res.json(previewResult);
-    } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Server Error' });
-    }
-};
-
-// Bulk Import Confirm
-exports.confirmImport = async (req, res) => {
     const client = await db.getClient();
     try {
         await client.query('BEGIN');
-        const { medicines, user_id } = req.body;
+        const { id } = req.params;
+        const result = await client.query(
+            `UPDATE medicines SET status = 'INACTIVE', updated_at = CURRENT_TIMESTAMP
+             WHERE medicine_id = $1 AND status <> 'INACTIVE'
+             RETURNING medicine_id`,
+            [id]
+        );
+        if (result.rows.length === 0) {
+            await client.query('ROLLBACK');
+            return res.status(404).json({ error: 'Medicine not found or already inactive' });
+        }
         const current_user_id = req.user && req.user.user_id;
-
-        if (!current_user_id) {
-            return res.status(401).json({ error: 'Authenticated staff account required' });
+        if (current_user_id) {
+            await client.query(
+                `INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id)
+                 VALUES ($1, $2, 'MEDICINES', $3, $4, $5, $6, $7, $8)`,
+                [current_user_id, 'MEDICINE_DEACTIVATED', 'medicines', id, JSON.stringify({ status: 'INACTIVE' }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]
+            );
         }
-        
-        let imported = 0;
-        let medicines_created = 0;
-        let batches_created = 0;
-        let stock_updated = 0;
-        
-        for (const row of medicines) {
-            const generic_name = (row.generic_name || '').trim().toLowerCase();
-            const brand_name = (row.brand_name || '').trim().toLowerCase();
-            const strength = (row.strength || '').trim().toLowerCase();
-            const dosage_form = (row.dosage_form || '').trim().toLowerCase();
-            const route = (row.route || '').trim().toLowerCase();
-            const batch_number = (row.batch_number || '').trim().toLowerCase();
-            
-            const medCheck = await client.query(`SELECT medicine_id FROM medicines WHERE LOWER(TRIM(generic_name))=$1 AND LOWER(TRIM(brand_name))=$2 AND LOWER(TRIM(strength))=$3 AND LOWER(TRIM(dosage_form))=$4 AND LOWER(TRIM(route))=$5`, [generic_name, brand_name, strength, dosage_form, route]);
-            
-            let medicine_id;
-            
-            if (medCheck.rows.length > 0) {
-                medicine_id = medCheck.rows[0].medicine_id;
-            } else {
-                const insertMed = `INSERT INTO medicines (category_id, sub_category_id, generic_name, brand_name, strength, dosage_form, route) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING medicine_id`;
-                const medRes = await client.query(insertMed, [row.category_id || null, row.sub_category_id || null, row.generic_name, row.brand_name, row.strength, row.dosage_form, row.route]);
-                medicine_id = medRes.rows[0].medicine_id;
-                medicines_created++;
-                await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_CREATED', 'medicines', medicine_id, JSON.stringify({ generic_name: row.generic_name, brand_name: row.brand_name, description: `Registered ${row.generic_name} ${row.brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
-            }
-            
-            const batchCheck = await client.query(`SELECT batch_id, stock_quantity FROM batches WHERE medicine_id=$1 AND LOWER(TRIM(batch_number))=$2`, [medicine_id, batch_number]);
-            
-            let batch_id;
-            let previous_stock = 0;
-            
-            if (batchCheck.rows.length > 0) {
-                batch_id = batchCheck.rows[0].batch_id;
-                previous_stock = batchCheck.rows[0].stock_quantity;
-                await client.query(`UPDATE batches SET stock_quantity = stock_quantity + $1 WHERE batch_id = $2`, [row.quantity, batch_id]);
-                stock_updated++;
-            } else {
-                const insertBatch = `INSERT INTO batches (medicine_id, supplier_id, batch_number, expiry_date, buy_price, sell_price, stock_quantity) VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING batch_id`;
-                const batchRes = await client.query(insertBatch, [medicine_id, row.supplier_id || null, row.batch_number, row.expiry_date, row.buy_price, row.sell_price, row.quantity]);
-                batch_id = batchRes.rows[0].batch_id;
-                batches_created++;
-            }
-            
-            const insertMovement = `INSERT INTO stock_movements (batch_id, user_id, movement_type, quantity, previous_stock, new_stock, notes) VALUES ($1, $2, $3, $4, $5, $6, $7)`;
-            await client.query(insertMovement, [batch_id, current_user_id, 'RESUPPLY', row.quantity, previous_stock, previous_stock + row.quantity, 'Bulk Import']);
-            
-            imported++;
-        }
-        
         await client.query('COMMIT');
-        res.json({ imported, medicines_created, batches_created, stock_updated });
+        res.json({ message: 'Medicine deactivated' });
     } catch (err) {
         await client.query('ROLLBACK');
         console.error(err);
-        res.status(500).json({ error: 'Server Error' });
+        res.status(500).json({ error: 'Failed to deactivate medicine', details: err?.message || '' });
     } finally {
         client.release();
     }
 };
+
+// Bulk Import Preview — delegated to the shared import service
+// (normalized duplicate detection, batch-field validation, supplier matching).
+exports.previewImport = async (req, res) => {
+    try {
+        const { medicines, rows } = req.body;
+        const payload = Array.isArray(rows) ? rows : medicines;
+        if (!payload || !Array.isArray(payload)) {
+            return res.status(400).json({ error: 'Invalid payload' });
+        }
+        const preview = await importService.previewImport(payload, req.body.mode || 'batch');
+        res.json(preview);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Server Error' });
+    }
+};
+
+// Bulk Import Confirm — single bulk database transaction + realtime broadcast.
+exports.confirmImport = async (req, res) => {
+    try {
+        const { medicines, rows } = req.body;
+        const payload = Array.isArray(rows) ? rows : medicines;
+        if (!payload || !Array.isArray(payload)) {
+            return res.status(400).json({ error: 'Invalid payload' });
+        }
+        const current_user_id = req.user && req.user.user_id;
+        if (!current_user_id) {
+            return res.status(401).json({ error: 'Authenticated staff account required' });
+        }
+        const stats = await importService.confirmImport(payload, current_user_id, req.body.mode || 'batch');
+        res.json(stats);
+    } catch (err) {
+        console.error(err);
+        res.status(400).json({ error: 'Could not confirm import', details: err?.message || 'Unknown import error' });
+    }
+};
+
+// Downloadable import template row set (CSV/JSON template generation).
+// `type` selects the template: medicine | batch (default batch).
+exports.importTemplate = async (req, res) => {
+    const type = String(req.query.type || 'batch').toLowerCase();
+    res.json(importService.templateRows[type] || importService.templateRows.batch);
+};
+

@@ -15,6 +15,52 @@
 
 .inv-search { max-width: 320px; flex: 1; min-width: 200px; }
 
+/* ── Sort controls ── */
+.inv-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 1rem;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+}
+.sort-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.sort-select {
+  max-width: 180px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+}
+.sort-order-btn {
+  padding: 0.4rem 0.7rem;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+.sort-info {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* ── Pagination controls ── */
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem;
+  border-top: 1px solid var(--border);
+}
+.pagination-info {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 .btn-sm { padding: 0.4rem 0.8rem; min-height: 34px; font-size: 0.78rem; }
 
 /* Mobile table / card visibility */
@@ -63,7 +109,7 @@
   border-top: 1px dashed var(--border);
 }
 
-/* ── Bin card ── */
+/* ── Bin card (modern card format) ── */
 .bincard-wrap { max-width: 100%; }
 
 .bincard-toolbar {
@@ -80,33 +126,45 @@
   align-items: center;
   gap: 0.55rem;
   flex-wrap: wrap;
-  padding: 1rem 1.2rem;
-  border-radius: var(--radius-md);
+  padding: 1.2rem 1.5rem;
+  border-radius: var(--radius-lg);
+  background: linear-gradient(135deg, var(--surface) 0%, var(--surface-alt) 100%);
   border: 1px solid var(--border);
-  margin-bottom: 1rem;
+  margin-bottom: 1.25rem;
   color: var(--text-secondary);
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
-.bincard-title svg { color: var(--text-muted); }
-.bincard-title strong { color: var(--text-main); }
-.bincard-med-name { font-weight: 700; color: var(--text-main); font-size: 1rem; }
+.bincard-title svg { color: var(--primary); }
+.bincard-title strong { color: var(--text-main); font-size: 1.1rem; }
+.bincard-med-name { font-weight: 700; color: var(--text-main); font-size: 1.05rem; }
 
 .bincard-stats {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
-  gap: 0.65rem;
-  margin-bottom: 1.25rem;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 0.75rem;
+  margin-bottom: 1.5rem;
 }
 
 .bincard-stat {
-  background: var(--surface-alt);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: var(--radius-md);
-  padding: 0.75rem 0.9rem;
+  border-radius: var(--radius-lg);
+  padding: 1rem 1.2rem;
+  box-shadow: 0 2px 6px rgba(0, 0, 0, 0.03);
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
 }
-.bincard-stat span { display: block; font-size: 0.72rem; color: var(--text-muted); font-weight: 600; }
-.bincard-stat strong { display: block; font-size: 1.3rem; margin-top: 0.2rem; color: var(--text-main); }
+.bincard-stat:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.06);
+}
+.bincard-stat span { display: block; font-size: 0.72rem; color: var(--text-muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.03em; }
+.bincard-stat strong { display: block; font-size: 1.4rem; margin-top: 0.25rem; color: var(--text-main); font-weight: 700; }
 .bincard-stat.danger { background: var(--danger-bg); border-color: var(--danger-border); }
 .bincard-stat.danger strong, .bincard-stat.danger span { color: var(--danger); }
+.bincard-stat.success { background: var(--success-bg, #f0fdf4); border-color: var(--success-border, #bbf7d0); }
+.bincard-stat.success strong { color: var(--success, #16a34a); }
+.bincard-stat.info { background: var(--info-bg, #eff6ff); border-color: var(--info-border, #bfdbfe); }
+.bincard-stat.info strong { color: var(--info, #2563eb); }
 
 .bincard-batch-row {
   display: flex;
@@ -139,6 +197,63 @@
 .out-cell { color: var(--danger); font-weight: 700; }
 
 .buy-qty { color: var(--info); font-weight: 800; }
+
+.wtb-clickable { cursor: pointer; transition: background 0.15s ease; }
+.wtb-clickable:hover { background: var(--accent-subtle); }
+.wtb-mobile-card { width: 100%; text-align: left; color: inherit; cursor: pointer; }
+
+/* DSM reorder worksheet */
+.purchase-worksheet {
+  width: min(820px, calc(100vw - 1.5rem));
+  max-height: calc(100vh - 1.5rem);
+  overflow-y: auto;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 22px;
+  box-shadow: 0 24px 70px rgba(15, 23, 42, 0.22);
+  animation: worksheet-in 0.2s ease;
+}
+@keyframes worksheet-in { from { opacity: 0; transform: translateY(14px) scale(0.98); } to { opacity: 1; transform: none; } }
+.purchase-worksheet__head {
+  position: relative;
+  display: flex;
+  justify-content: space-between;
+  gap: 1rem;
+  padding: 1.35rem 1.5rem;
+  color: #fff;
+  background: linear-gradient(135deg, #173f5f, #20639b 58%, #3caea3);
+}
+.purchase-worksheet__head h2 { margin: 0.35rem 0 0.15rem; font-size: clamp(1.15rem, 3vw, 1.6rem); }
+.purchase-worksheet__head p { margin: 0; color: rgba(255,255,255,0.78); font-size: 0.82rem; }
+.purchase-worksheet__head .lm__close { background: rgba(255,255,255,0.16); color: #fff; }
+.worksheet-kicker { display: inline-flex; align-items: center; gap: 0.35rem; font-size: 0.68rem; letter-spacing: 0.1em; font-weight: 800; color: #b9f3e8; }
+.worksheet-inputs { display: grid; grid-template-columns: repeat(3, 1fr); gap: 0.7rem; padding: 1rem 1.5rem; background: var(--surface-alt); border-bottom: 1px solid var(--border); }
+.worksheet-inputs label { display: grid; gap: 0.3rem; color: var(--text-muted); font-size: 0.7rem; font-weight: 800; text-transform: uppercase; }
+.worksheet-inputs input { width: 100%; min-width: 0; padding: 0.55rem 0.6rem; border: 1px solid var(--border); border-radius: 8px; background: var(--surface); color: var(--text-main); font: inherit; font-size: 0.86rem; }
+.worksheet-flow { padding: 0.9rem 1.5rem; }
+.worksheet-step { display: grid; grid-template-columns: 32px 1fr auto; align-items: center; gap: 0.75rem; padding: 0.78rem 0; border-bottom: 1px solid var(--border); }
+.worksheet-step__number { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 9px; background: var(--accent-subtle); color: var(--primary); font-size: 0.68rem; font-weight: 900; }
+.worksheet-step strong, .worksheet-step small { display: block; }
+.worksheet-step strong { color: var(--text-main); font-size: 0.84rem; }
+.worksheet-step small { margin-top: 0.16rem; color: var(--text-muted); font-size: 0.72rem; }
+.worksheet-step b { color: var(--text-main); font-size: 1rem; text-align: right; }
+.worksheet-step em { color: var(--text-muted); font-size: 0.68rem; font-style: normal; font-weight: 500; }
+.worksheet-decision { display: flex; align-items: center; gap: 0.7rem; margin: 0 1.5rem 1rem; padding: 0.85rem 1rem; border: 1px solid; border-radius: 12px; }
+.worksheet-decision strong, .worksheet-decision span { display: block; }
+.worksheet-decision strong { font-size: 0.82rem; }
+.worksheet-decision span { margin-top: 0.15rem; font-size: 0.76rem; color: var(--text-muted); }
+.worksheet-decision.is-order { color: var(--danger); background: var(--danger-bg); border-color: var(--danger-border); }
+.worksheet-decision.is-ok { color: var(--success); background: var(--success-bg, #f0fdf4); border-color: var(--success-border, #bbf7d0); }
+.worksheet-summary { display: flex; justify-content: space-between; gap: 1rem; padding: 1rem 1.5rem 1.25rem; background: var(--text-main); color: #fff; font-size: 0.82rem; }
+.worksheet-summary strong { display: block; margin-top: 0.2rem; color: #b9f3e8; font-size: 1.1rem; }
+
+@media (max-width: 620px) {
+  .worksheet-inputs { grid-template-columns: repeat(2, 1fr); padding: 0.9rem; }
+  .worksheet-flow { padding: 0.75rem 0.9rem; }
+  .worksheet-decision { margin-inline: 0.9rem; }
+  .worksheet-summary { padding-inline: 0.9rem; flex-direction: column; }
+  .purchase-worksheet__head { padding: 1.15rem; }
+}
 
 /* ── What to buy priority cards ── */
 .wtb-priority-grid {
@@ -176,6 +291,24 @@
 }
 .wtb-card-grid strong { color: var(--text-main); display: block; font-size: 0.84rem; }
 
+/* "Why this recommendation?" explanation inside the reorder worksheet */
+.purchase-worksheet__why {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin: 0.9rem 1.25rem 0;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--warning, #d97706) 35%, transparent);
+  background: color-mix(in srgb, var(--warning, #d97706) 8%, transparent);
+  border-radius: var(--radius-md);
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: var(--text-secondary);
+}
+.purchase-worksheet__why svg { flex-shrink: 0; margin-top: 2px; color: var(--warning, #d97706); }
+.purchase-worksheet__why strong { display: block; color: var(--text-main); margin-bottom: 2px; }
+.purchase-worksheet__why p { margin: 0; }
+
 /* Packaging stock-entry section */
 .packaging-section {
   border: 1px solid var(--border);
@@ -201,3 +334,4 @@
   color: var(--text-main);
   font-variant-numeric: tabular-nums;
 }
+

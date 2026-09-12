@@ -187,9 +187,22 @@ exports.addStock = async (req, res) => {
 };
 
 // Get medicine-level total stock
+// Supports server-side pagination and sorting
 exports.getStock = async (req, res) => {
     try {
-        const { search } = req.query;
+        const { search, page, limit, sortBy, sortOrder } = req.query;
+
+        /* Sorting configuration */
+        const sortMap = {
+            generic_name: 'm.generic_name',
+            brand_name: 'm.brand_name',
+            stock_on_hand: 'stock_on_hand',
+            nearest_expiry: 'nearest_expiry',
+            last_received: 'last_received',
+            created_date: 'm.created_at',
+        };
+        const sortColumn = sortMap[sortBy] || 'm.generic_name';
+        const order = sortOrder === 'desc' ? 'DESC' : 'ASC';
 
         if (search) {
             const normalized = String(search).trim();
@@ -225,19 +238,91 @@ exports.getStock = async (req, res) => {
                     OR LOWER(m.strength) LIKE LOWER($2)
                     OR REPLACE(REPLACE(LOWER(CAST(b.batch_number AS TEXT)), ' ', ''), '-', '') LIKE REPLACE(REPLACE(LOWER($2), ' ', ''), '-', '')
                   )
-                ORDER BY b.expiry_date ASC, m.generic_name ASC
+                ORDER BY ${sortColumn} ${order}
                 LIMIT 50
             `, [normalized, likeValue]);
 
             return res.json(result.rows);
         }
 
+        /* Pagination mode */
+        if (page && limit) {
+            const limitNum = Math.min(Math.max(parseInt(limit, 10) || 15, 1), 100);
+            const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+            const offset = (pageNum - 1) * limitNum;
+
+            const countRes = await db.query(
+                `SELECT COUNT(*)::int AS total FROM medicines m`,
+                []
+            );
+            const total = countRes.rows[0]?.total || 0;
+
+            const result = await db.query(`
+                SELECT
+                    m.medicine_id,
+                    m.generic_name,
+                    m.brand_name,
+                    m.strength,
+                    m.created_at,
+                    COALESCE(m.prescription_type, 'OTC') AS prescription_type,
+                    COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
+                    MIN(b.expiry_date) FILTER (WHERE b.status = 'ACTIVE' AND b.expiry_date >= CURRENT_DATE) AS nearest_expiry,
+                    MAX(b.created_at) AS last_received,
+                    (
+                        SELECT b2.sell_price
+                        FROM batches b2
+                        WHERE b2.medicine_id = m.medicine_id
+                          AND b2.stock_quantity > 0
+                          AND b2.status = 'ACTIVE'
+                        ORDER BY b2.expiry_date ASC
+                        LIMIT 1
+                    ) AS current_price,
+                    (
+                        SELECT b3.packaging_unit
+                        FROM batches b3
+                        WHERE b3.medicine_id = m.medicine_id
+                          AND b3.stock_quantity > 0
+                          AND b3.status = 'ACTIVE'
+                        ORDER BY b3.expiry_date ASC
+                        LIMIT 1
+                    ) AS packaging_unit,
+                    (
+                        SELECT GREATEST(b4.units_per_package, 1)
+                        FROM batches b4
+                        WHERE b4.medicine_id = m.medicine_id
+                          AND b4.stock_quantity > 0
+                          AND b4.status = 'ACTIVE'
+                        ORDER BY b4.expiry_date ASC
+                        LIMIT 1
+                    ) AS strip_size,
+                    m.status
+                FROM medicines m
+                LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
+                GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.created_at, m.prescription_type, m.status
+                ORDER BY ${sortColumn} ${order} NULLS LAST, m.generic_name ASC, m.medicine_id ASC
+                LIMIT ${limitNum} OFFSET ${offset}
+            `);
+
+            return res.json({
+                success: true,
+                data: result.rows,
+                pagination: {
+                    page: pageNum,
+                    limit: limitNum,
+                    total,
+                    totalPages: Math.max(1, Math.ceil(total / limitNum)),
+                },
+            });
+        }
+
+        /* Legacy full-list mode */
         const result = await db.query(`
             SELECT
                 m.medicine_id,
                 m.generic_name,
                 m.brand_name,
                 m.strength,
+                m.created_at,
                 COALESCE(m.prescription_type, 'OTC') AS prescription_type,
                 COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
                 (
@@ -270,8 +355,8 @@ exports.getStock = async (req, res) => {
                 m.status
             FROM medicines m
             LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
-            GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.prescription_type, m.status
-            ORDER BY m.generic_name ASC
+            GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.created_at, m.prescription_type, m.status
+            ORDER BY ${sortColumn} ${order} NULLS LAST, m.generic_name ASC, m.medicine_id ASC
         `);
 
         res.json(result.rows);
@@ -305,8 +390,48 @@ exports.getBinCard = async (req, res) => {
 };
 
 // Get complete stock movement history
+// Supports server-side pagination
 exports.getMovements = async (req, res) => {
     try {
+        const { page, limit } = req.query;
+
+        /* Pagination mode */
+        if (page && limit) {
+            const limitNum = Math.min(Math.max(parseInt(limit, 10) || 15, 1), 100);
+            const pageNum = Math.max(parseInt(page, 10) || 1, 1);
+            const offset = (pageNum - 1) * limitNum;
+
+            const countRes = await db.query(
+                `SELECT COUNT(*)::int AS total FROM stock_movements`,
+                []
+            );
+            const total = countRes.rows[0]?.total || 0;
+
+            const result = await db.query(`
+                SELECT sm.movement_id, sm.movement_date, m.generic_name as drug_name, b.batch_number,
+                       sm.movement_type, sm.quantity, sm.previous_stock, sm.new_stock,
+                       u.full_name as user_name, sm.notes as reference
+                FROM stock_movements sm
+                JOIN batches b ON sm.batch_id = b.batch_id
+                JOIN medicines m ON b.medicine_id = m.medicine_id
+                JOIN users u ON sm.user_id = u.user_id
+                ORDER BY sm.movement_date DESC
+                LIMIT ${limitNum} OFFSET ${offset}
+            `);
+
+            return res.json({
+                success: true,
+                data: result.rows,
+                pagination: {
+                    page: pageNum,
+                    limit: limitNum,
+                    total,
+                    totalPages: Math.max(1, Math.ceil(total / limitNum)),
+                },
+            });
+        }
+
+        /* Legacy full-list mode */
         const result = await db.query(`
             SELECT sm.movement_id, sm.movement_date, m.generic_name as drug_name, b.batch_number,
                    sm.movement_type, sm.quantity, sm.previous_stock, sm.new_stock,
@@ -451,7 +576,7 @@ exports.getBinCardIndex = async (req, res) => {
             WHERE ($1::text IS NULL OR LOWER(m.generic_name) LIKE $1 OR LOWER(m.brand_name) LIKE $1)
             GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.reorder_level, m.status, c.name
             ORDER BY m.generic_name ASC
-        `, [searchParam, search]);
+        `, [searchParam]);
         
         let filtered = result.rows;
         if (status && status !== 'ALL') {
@@ -468,7 +593,7 @@ exports.getBinCardDetail = async (req, res) => {
     try {
         const { medicine_id } = req.params;
         // Filters from query string
-        const { batch_id, from_date, to_date, movement_type, user_id, order = 'ASC' } = req.query;
+        const { batch_id, from_date, to_date, movement_type, user_id, order = 'ASC', page, limit } = req.query;
         const sortDir = order.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
         const medResult = await db.query(`
@@ -499,6 +624,27 @@ exports.getBinCardDetail = async (req, res) => {
         if (movement_type) { conditions.push(`sm.movement_type = $${i++}`); params.push(movement_type); }
         if (user_id) { conditions.push(`sm.user_id = $${i++}`); params.push(user_id); }
 
+        /* Pagination for the ledger */
+        const limitNum = page && limit
+            ? Math.min(Math.max(parseInt(limit, 10) || 50, 1), 500)
+            : 500;
+        const ledgerPageNum = page && limit
+            ? Math.max(parseInt(page, 10) || 1, 1)
+            : 1;
+        const ledgerOffset = (ledgerPageNum - 1) * limitNum;
+
+        /* Count total ledger rows when paginating */
+        let ledgerTotal = null;
+        if (page && limit) {
+            const countRes = await db.query(
+                `SELECT COUNT(*)::int AS total FROM stock_movements sm
+                 JOIN batches b ON sm.batch_id = b.batch_id
+                 WHERE ${conditions.join(' AND ')}`,
+                params
+            );
+            ledgerTotal = countRes.rows[0]?.total || 0;
+        }
+
         const ledgerResult = await db.query(`
             SELECT 
               sm.movement_id,
@@ -524,7 +670,7 @@ exports.getBinCardDetail = async (req, res) => {
             LEFT JOIN users u ON sm.user_id = u.user_id
             WHERE ${conditions.join(' AND ')}
             ORDER BY sm.movement_date ${sortDir}, sm.movement_id ${sortDir}
-            LIMIT 500
+            LIMIT ${limitNum} OFFSET ${ledgerOffset}
         `, params);
 
 
@@ -539,11 +685,15 @@ exports.getBinCardDetail = async (req, res) => {
             ORDER BY b.expiry_date ASC
         `, [medicine_id]);
 
-        res.json({
-            medicine: medResult.rows[0],
-            ledger: ledgerResult.rows,
-            batches: batchesResult.rows
-        });
+                                                res.json({
+                    medicine: medResult.rows[0],
+                    ledger: ledgerResult.rows,
+                    ledgerPagination: ledgerTotal !== null ? {
+                        total: ledgerTotal,
+                        totalPages: Math.max(1, Math.ceil(ledgerTotal / limitNum)),
+                    } : null,
+                    batches: batchesResult.rows
+                });
     } catch (err) {
         console.error('BinCardDetail Error:', err);
         res.status(500).json({ error: 'Database error in getBinCardDetail' });
@@ -552,15 +702,41 @@ exports.getBinCardDetail = async (req, res) => {
 
 exports.getWhatToBuy = async (req, res) => {
     try {
+        const page = Math.max(Number.parseInt(req.query.page, 10) || 1, 1);
+        const limit = Math.min(Math.max(Number.parseInt(req.query.limit, 10) || 18, 1), 100);
+
+        /*
+         * Supply-chain parameters (Ethiopian private pharmacy defaults):
+         *   lead_time_days — supplier delivery delay (local default 7 days)
+         *   safety_days    — demand cover against delays/shortages
+         *   coverage_days  — target stock horizon an order replenishes
+         * All sanitized integers — safe to inline into the SQL text.
+         */
+        const leadTimeDays = Math.min(Math.max(Number.parseInt(req.query.lead_time_days, 10) || 7, 1), 60);
+        const safetyDays = Math.min(Math.max(Number.parseInt(req.query.safety_days, 10) || 5, 1), 30);
+        const coverageDays = Math.min(Math.max(Number.parseInt(req.query.coverage_days, 10) || 30, 7), 120);
+
+        /* Demand window aliases (single-dose units from REAL dispensing history) */
+        const ADS_90 = `COALESCE((SELECT SUM(si.quantity) / 90.0 FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id JOIN batches sb ON sb.batch_id = si.batch_id WHERE sb.medicine_id = m.medicine_id AND s.status = 'COMPLETED' AND s.sale_date >= CURRENT_DATE - INTERVAL '90 days'), 0)`;
+        const ADS_30 = `COALESCE((SELECT SUM(si.quantity) / 30.0 FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id JOIN batches sb ON sb.batch_id = si.batch_id WHERE sb.medicine_id = m.medicine_id AND s.status = 'COMPLETED' AND s.sale_date >= CURRENT_DATE - INTERVAL '30 days'), 0)`;
+
         const result = await db.query(`
-            SELECT 
+            SELECT
               m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form,
-              COALESCE(m.reorder_level, 0) as reorder_level, COALESCE(m.max_level, COALESCE(m.reorder_level, 0) + 10) as max_level,
+              COALESCE(m.reorder_level, 0) as reorder_level,
+              COALESCE(m.reorder_level, 0) as min_level,
+              COALESCE(m.max_level, COALESCE(m.reorder_level, 0) + 10) as max_level,
               MAX(b.abc_category) as abc_category, MAX(b.ven_category) as ven_category,
               COALESCE(SUM(b.stock_quantity), 0) as current_stock,
-              GREATEST(0, COALESCE(m.max_level, COALESCE(m.reorder_level, 0) + 10) - COALESCE(SUM(b.stock_quantity), 0)) as suggested_qty,
-              MIN(b.expiry_date) as earliest_expiry,
+              COALESCE(SUM(CASE WHEN b.expiry_date IS NULL OR b.expiry_date >= CURRENT_DATE THEN b.stock_quantity ELSE 0 END), 0) as usable_stock,
+              MIN(CASE WHEN b.expiry_date >= CURRENT_DATE THEN b.expiry_date END) as earliest_valid_expiry,
               c.name as category_name,
+              ${ADS_90} as ads_90,
+              ${ADS_30} as ads_30,
+              COALESCE((SELECT SUM(si.quantity) / 60.0 FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id JOIN batches sb ON sb.batch_id = si.batch_id WHERE sb.medicine_id = m.medicine_id AND s.status = 'COMPLETED' AND s.sale_date >= CURRENT_DATE - INTERVAL '90 days' AND s.sale_date < CURRENT_DATE - INTERVAL '30 days'), 0) as ads_prev_60,
+              COALESCE((SELECT SUM(si.quantity) FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id JOIN batches sb ON sb.batch_id = si.batch_id WHERE sb.medicine_id = m.medicine_id AND s.sale_date >= CURRENT_DATE - INTERVAL '6 months' AND s.status = 'COMPLETED'), 0) as issued_last_6_months,
+              (SELECT MIN(s.sale_date) FROM sale_items si JOIN sales s ON s.sale_id = si.sale_id JOIN batches sb ON sb.batch_id = si.batch_id WHERE sb.medicine_id = m.medicine_id AND s.status = 'COMPLETED' AND s.sale_date >= CURRENT_DATE - INTERVAL '1 year') as first_sale_date,
+              COALESCE((SELECT b4.units_per_package FROM batches b4 WHERE b4.medicine_id = m.medicine_id ORDER BY b4.created_at DESC LIMIT 1), 1) as units_per_package,
               (SELECT s.name FROM suppliers s JOIN batches b2 ON b2.supplier_id = s.supplier_id WHERE b2.medicine_id = m.medicine_id ORDER BY b2.created_at DESC LIMIT 1) as last_supplier,
               (SELECT b3.buy_price FROM batches b3 WHERE b3.medicine_id = m.medicine_id ORDER BY b3.created_at DESC LIMIT 1) as last_buy_price
             FROM medicines m
@@ -568,28 +744,136 @@ exports.getWhatToBuy = async (req, res) => {
             LEFT JOIN categories c ON m.category_id = c.category_id
             WHERE m.status = 'ACTIVE'
             GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.reorder_level, m.max_level, c.name
-            HAVING COALESCE(SUM(b.stock_quantity), 0) <= COALESCE(m.reorder_level, 0)
-            ORDER BY 
-              CASE MAX(b.ven_category) WHEN 'V' THEN 1 WHEN 'E' THEN 2 WHEN 'N' THEN 3 ELSE 4 END,
-              CASE MAX(b.abc_category) WHEN 'A' THEN 1 WHEN 'B' THEN 2 WHEN 'C' THEN 3 ELSE 4 END,
-              current_stock ASC
+            /* Actionable list: at/below the manual min level, OR usable stock at/below
+               the calculated reorder point (ADS x lead time + safety stock) */
+            HAVING
+                COALESCE(SUM(b.stock_quantity), 0) <= COALESCE(m.reorder_level, 0)
+                OR ${ADS_90} * ${leadTimeDays + safetyDays} >= COALESCE(SUM(CASE WHEN b.expiry_date IS NULL OR b.expiry_date >= CURRENT_DATE THEN b.stock_quantity ELSE 0 END), 0)
         `);
 
+        const today = new Date();
         const rows = result.rows.map(row => {
-            const v = row.ven_category;
-            const a = row.abc_category;
-            let priority = 'NORMAL';
-            
-            if (v === 'V' && (a === 'A' || a === 'B' || a === 'C')) priority = 'CRITICAL';
-            else if (v === 'E' && a === 'A') priority = 'HIGH';
-            else if (v === 'E' && (a === 'B' || a === 'C')) priority = 'MEDIUM';
-            else if (v === 'N' && a === 'A') priority = 'HIGH';
-            else if (v === 'N' && (a === 'B' || a === 'C')) priority = 'LOW';
+            const stock = Number(row.current_stock) || 0;
+            const usable = Number(row.usable_stock) || 0;
+            const minLevel = Number(row.min_level) || 0;
+            const maxLevel = Number(row.max_level) || minLevel + 10;
+            const ads = Math.max(0, Number(row.ads_90) || 0);
+            const adsRecent = Math.max(0, Number(row.ads_30) || 0);
+            const adsPrev = Math.max(0, Number(row.ads_prev_60) || 0);
+            const total90 = Math.round(ads * 90);
 
-            return { ...row, priority };
+            const firstSale = row.first_sale_date ? new Date(row.first_sale_date) : null;
+            const historyDays = firstSale ? Math.max(1, Math.min(90, Math.ceil((today - firstSale) / 86400000))) : 0;
+            const hasSales = total90 > 0;
+
+            /* Confidence in the demand estimate = how much REAL history exists */
+            const confidence = !hasSales ? 'NO_DATA' : historyDays >= 60 ? 'HIGH' : historyDays >= 14 ? 'MEDIUM' : 'LOW';
+
+            /* Recent trend — prevents buying based on stale demand */
+            let trend = 'NO_DATA';
+            if (hasSales) {
+                const ratio = adsPrev > 0 ? adsRecent / adsPrev : 1.5;
+                trend = ratio >= 1.15 ? 'INCREASING' : ratio <= 0.85 ? 'DECREASING' : 'STABLE';
+            }
+
+            /* Stock coverage in days at current demand (never divide by zero) */
+            const coverage = hasSales && ads > 0 ? Math.floor(usable / ads) : null;
+
+            /* Movement speed from actual sales velocity */
+            const movement = !hasSales ? 'NO DATA' : ads >= 5 ? 'FAST' : ads >= 1 ? 'MEDIUM' : 'SLOW';
+
+            /* Safety stock = extra demand cover (ADS x safety days) */
+            const safetyStock = Math.ceil(ads * safetyDays);
+
+            /* Reorder point = demand during lead time + safety stock.
+               No sales data → fall back to the manual reorder level. */
+            const reorderPoint = hasSales ? Math.ceil(ads * leadTimeDays + safetyStock) : minLevel;
+
+            /* Days until the reorder point is crossed at current demand */
+            const daysToReorder = hasSales && ads > 0 ? Math.floor((usable - reorderPoint) / ads) : null;
+
+            /* Order quantity = target stock − on-hand usable stock (never negative).
+               Target = demand over the coverage horizon + safety stock. */
+            const targetStock = hasSales ? Math.ceil(ads * coverageDays + safetyStock) : maxLevel;
+            let orderQty = Math.max(0, targetStock - usable);
+            /* Slow movers: low demand + low stock does NOT mean a big buy */
+            if (movement === 'SLOW') orderQty = Math.min(orderQty, safetyStock);
+
+            /* Expiry risk — a batch that will likely expire before it sells */
+            let expiryRisk = false;
+            if (row.earliest_valid_expiry) {
+                const daysToExpiry = Math.ceil((new Date(row.earliest_valid_expiry) - today) / 86400000);
+                expiryRisk = daysToExpiry <= 60 && (coverage === null || coverage > daysToExpiry);
+            }
+            const writeOffUnits = Math.max(0, stock - usable);
+
+            /* Priority — urgency first, boosted (never overridden) by ABC/VEN */
+            let urgency = 'MONITOR';
+            if (coverage !== null && coverage <= leadTimeDays) urgency = 'URGENT';
+            else if (stock <= 0) urgency = 'HIGH';
+            else if (hasSales && usable <= reorderPoint) urgency = 'HIGH';
+            else if (daysToReorder !== null && daysToReorder <= 14) urgency = 'PLAN';
+
+            const venBoost = row.ven_category === 'V' ? 2 : row.ven_category === 'E' ? 1 : 0;
+            const abcBoost = row.abc_category === 'A' ? 2 : row.abc_category === 'B' ? 1 : 0;
+            const boostScore = venBoost + abcBoost;
+            const boostRank = boostScore >= 3 ? 2 : boostScore >= 2 ? 1 : 0;
+            const urgencyRank = { URGENT: 3, HIGH: 2, PLAN: 1, MONITOR: 0 }[urgency];
+            const finalRank = Math.max(urgencyRank, boostRank);
+            const priority = { 3: 'URGENT', 2: 'HIGH', 1: 'PLAN', 0: 'MONITOR' }[finalRank];
+
+            /* When to buy */
+            let whenToBuy = 'Monitor';
+            if (priority === 'URGENT') whenToBuy = 'Order now';
+            else if (priority === 'HIGH') whenToBuy = 'Order within 3 days';
+            else if (priority === 'PLAN') whenToBuy = `Order within ${Math.max(1, daysToReorder ?? 7)} days`;
+
+            /* Why — plain-language explanation for the pharmacist */
+            const parts = [];
+            if (hasSales) {
+                parts.push(`sells about ${ads < 10 ? ads.toFixed(1) : Math.round(ads)} units/day (${trend.toLowerCase()} demand)`);
+                parts.push(`current stock covers ${coverage} day${coverage === 1 ? '' : 's'}`);
+            } else {
+                parts.push('no recent sales recorded');
+            }
+            parts.push(`supplier lead time ${leadTimeDays} days, safety stock ${safetyStock} units, reorder point ${reorderPoint} units`);
+            if (expiryRisk) parts.push('existing stock is at expiry risk — sell it down before receiving more');
+            if (writeOffUnits > 0) parts.push(`${writeOffUnits} units in expired batches must be written off`);
+            const why = `${row.generic_name} ${parts.join('; ')}.`;
+
+            return {
+                ...row,
+                min_level: minLevel, max_level: maxLevel, reorder_level: minLevel,
+                current_stock: stock, usable_stock: usable,
+                ads, ads_recent: adsRecent, ads_prev: adsPrev,
+                trend, confidence, movement,
+                coverage_days: coverage, days_to_reorder: daysToReorder,
+                lead_time_days: leadTimeDays, safety_stock: safetyStock, reorder_point: reorderPoint,
+                target_stock: targetStock, suggested_qty: orderQty, order_qty: orderQty,
+                expiry_risk: expiryRisk, write_off_units: writeOffUnits,
+                history_days: historyDays, priority, when_to_buy: whenToBuy, why,
+                estimated_cost: Math.round(orderQty * (Number(row.last_buy_price) || 0) * 100) / 100,
+            };
         });
 
-        res.json(rows);
+        /* Highest procurement urgency first, then lowest coverage, then fastest movers */
+        const PRIORITY_ORDER = { URGENT: 0, HIGH: 1, PLAN: 2, MONITOR: 3 };
+        rows.sort((a, b) =>
+            (PRIORITY_ORDER[a.priority] - PRIORITY_ORDER[b.priority]) ||
+            ((a.coverage_days ?? 9999) - (b.coverage_days ?? 9999)) ||
+            (b.ads - a.ads)
+        );
+
+        const priorityCounts = rows.reduce((counts, row) => {
+            counts[row.priority] = (counts[row.priority] || 0) + 1;
+            return counts;
+        }, {});
+        const start = (page - 1) * limit;
+        res.json({
+            data: rows.slice(start, start + limit),
+            pagination: { page, limit, total: rows.length, totalPages: Math.max(1, Math.ceil(rows.length / limit)) },
+            priorityCounts,
+        });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Server Error' });

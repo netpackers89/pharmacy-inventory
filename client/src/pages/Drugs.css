@@ -89,6 +89,49 @@
   border-radius: var(--radius-md);
 }
 
+/* Category picker: visual, touch-friendly selection instead of a tiny native menu. */
+.category-picker {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(145px, 1fr));
+  gap: 0.55rem;
+  max-height: 190px;
+  overflow-y: auto;
+  padding: 0.2rem;
+}
+.category-tile {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+  min-height: 52px;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  background: var(--surface);
+  color: var(--text-secondary);
+  text-align: left;
+  font: inherit;
+  font-size: 0.78rem;
+  font-weight: 700;
+  cursor: pointer;
+  transition: border-color 0.16s ease, background 0.16s ease, transform 0.16s ease;
+}
+.category-tile:hover { border-color: var(--primary); transform: translateY(-1px); }
+.category-tile.selected { border-color: var(--primary); background: var(--accent-subtle); color: var(--text-main); box-shadow: inset 0 0 0 1px var(--primary); }
+.category-tile__mark {
+  display: grid;
+  place-items: center;
+  width: 29px;
+  height: 29px;
+  flex: 0 0 auto;
+  border-radius: 9px;
+  background: var(--surface-alt);
+  color: var(--primary);
+  font-size: 0.82rem;
+  font-weight: 800;
+}
+.category-tile.selected .category-tile__mark { background: var(--primary); color: #fff; }
+.category-tile span:last-child { overflow-wrap: anywhere; }
+
 .drug-section-title {
   font-size: 0.8rem;
   font-weight: 800;
@@ -131,4 +174,413 @@
   border-left: 3px solid var(--primary);
   padding-left: 1rem;
   margin-top: 0.25rem;
+}
+
+/* ── Sort controls ── */
+.drugs-sort-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.6rem 0;
+  margin-bottom: 0.5rem;
+  flex-wrap: wrap;
+}
+.sort-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--text-muted);
+}
+.sort-select {
+  max-width: 180px;
+  padding: 0.4rem 0.6rem;
+  font-size: 0.82rem;
+}
+.sort-order-btn {
+  padding: 0.4rem 0.7rem;
+  font-weight: 600;
+  font-size: 0.8rem;
+}
+.sort-info {
+  margin-left: auto;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* ── Pagination bar (shared cards + table) ── */
+.drugs-pagination-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  padding: 0.8rem 1rem;
+  border-top: 1px solid var(--border);
+}
+.drugs-per-page {
+  display: flex;
+  align-items: center;
+  gap: 0.45rem;
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+.drugs-per-page label { font-weight: 600; }
+.drugs-pagination-bar .btn { white-space: nowrap; }
+
+/* ── Medicine card view (extends existing design system) ──────────────── */
+
+.drugs-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.view-toggle {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface);
+}
+.view-toggle__btn {
+  border: 0;
+  background: transparent;
+  padding: 0.45rem 0.7rem;
+  cursor: pointer;
+  color: var(--text-muted);
+  display: grid;
+  place-items: center;
+}
+.view-toggle__btn + .view-toggle__btn { border-left: 1px solid var(--border); }
+.view-toggle__btn.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+.drugs-filters {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+  margin-bottom: 1rem;
+}
+
+.dosage-select { max-width: 180px; }
+
+@media (max-width: 600px) {
+  .drugs-filters > .form-control,
+  .dosage-select { max-width: none !important; flex: 1 1 145px; }
+}
+
+.medicine-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  gap: 1.15rem;
+  align-items: start;
+}
+
+/*
+ * Hover-expanding medicine card (GoodReads-style):
+ * a fixed-height media area with a white panel anchored to the bottom.
+ * On hover/focus the panel grows upward (height animation — no layout
+ * reflow of siblings since the card keeps a fixed height) revealing the
+ * indication, the card's main learning content.
+ */
+.medicine-card {
+  --curve: 1.35rem;
+  --panel-h: 110px;
+  --panel-h-open: 206px;
+  position: relative;
+  height: 344px;
+  border-radius: 1.4rem;
+  overflow: hidden;
+  background: var(--surface-alt, #eef4ff);
+  border: 1px solid var(--border);
+  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
+  transition: box-shadow 0.3s ease, transform 0.3s ease;
+  cursor: pointer;
+}
+.medicine-card:hover,
+.medicine-card:focus-within {
+  box-shadow: 0 18px 40px -12px rgba(15, 23, 42, 0.22);
+  transform: translateY(-3px);
+}
+.medicine-card--skeleton { pointer-events: none; }
+
+/* ── Media area (whole card backdrop) ── */
+.medicine-card__media {
+  position: absolute;
+  inset: 0;
+  background: var(--surface-alt, #eef4ff);
+}
+.medicine-card__media .medicine-card__image {
+  height: 100%;
+  width: 100%;
+}
+.medicine-card__scrim {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0) 26%,
+    color-mix(in srgb, var(--surface-alt, #eef4ff) 55%, transparent) 62%,
+    var(--surface-alt, #eef4ff) 88%
+  );
+}
+
+.medicine-card__status {
+  position: absolute;
+  top: 0.7rem;
+  left: 0.7rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.18rem 0.55rem;
+  border-radius: 999px;
+  background: rgba(22, 163, 74, 0.92);
+  color: #fff;
+  z-index: 3;
+}
+.medicine-card__status.inactive { background: rgba(220, 38, 38, 0.92); }
+
+/* ── White content panel ── */
+.medicine-card__panel {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  height: var(--panel-h);
+  z-index: 2;
+  background: var(--surface, #fff);
+  border-radius: var(--curve) var(--curve) 0 0;
+  padding: 0.85rem 1rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 -10px 28px rgba(15, 23, 42, 0.1);
+  transition: height 0.38s cubic-bezier(0.4, 0, 0.2, 1);
+}
+.medicine-card:hover .medicine-card__panel,
+.medicine-card:focus-within .medicine-card__panel {
+  height: var(--panel-h-open);
+}
+
+/* Inverted organic fillet: concave curve connecting the panel's top-right
+   corner into the background image (classic radial "cut-out" trick). */
+.medicine-card__panel::before {
+  content: '';
+  position: absolute;
+  right: 0;
+  top: calc(var(--curve) * -1);
+  width: var(--curve);
+  height: var(--curve);
+  background: radial-gradient(
+    circle at 0% 0%,
+    transparent calc(var(--curve) - 0.5px),
+    var(--surface, #fff) var(--curve)
+  );
+  pointer-events: none;
+}
+
+/* ── Expandable detail area (indication-first) ── */
+.medicine-card__more {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  padding-top: 0.55rem;
+  opacity: 0;
+  transform: translateY(10px);
+  transition: opacity 0.3s ease 0.1s, transform 0.3s ease 0.1s;
+}
+.medicine-card:hover .medicine-card__more,
+.medicine-card:focus-within .medicine-card__more {
+  opacity: 1;
+  transform: none;
+}
+.medicine-card__indication {
+  margin: 0;
+  font-size: 0.79rem;
+  line-height: 1.5;
+  color: var(--text-secondary, #475569);
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.medicine-card__indication-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.64rem;
+  font-weight: 800;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  color: #15803d;
+  margin-bottom: 0.15rem;
+}
+
+.medicine-card__title {
+  margin: 0;
+  flex-shrink: 0;
+  font-size: 1.06rem;
+  font-weight: 800;
+  color: var(--text-main, #1e293b);
+  line-height: 1.25;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.medicine-card__subtitle {
+  margin: 0.2rem 0 0;
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 500;
+  color: var(--text-muted, #64748b);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.medicine-card__chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+.medicine-card .chip {
+  font-size: 0.68rem;
+  font-weight: 600;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface-alt, #f1f5f9);
+  color: var(--text-muted, #475569);
+  white-space: nowrap;
+}
+.medicine-card .chip--primary {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+}
+.medicine-card .chip--tint {
+  background: rgba(124, 58, 237, 0.1);
+  color: #6d28d9;
+}
+
+/* ── Footer (always visible): stats + actions ── */
+.medicine-card__footer {
+  margin-top: auto;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  border-top: 1px solid var(--border);
+  padding-top: 0.55rem;
+}
+.medicine-card__stats {
+  display: flex;
+  flex-direction: column;
+  gap: 0.1rem;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  min-width: 0;
+}
+.medicine-card__stats span {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  white-space: nowrap;
+}
+.medicine-card__stats .stat-danger { color: var(--danger, #dc2626); font-weight: 700; }
+.medicine-card__stats .stat-warning { color: #b45309; font-weight: 700; }
+
+.medicine-card__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+.medicine-card__icon-btn {
+  width: 30px;
+  height: 30px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  background: var(--surface-alt, #f1f5f9);
+  color: var(--text-secondary, #475569);
+  border: 1px solid var(--border);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+}
+.medicine-card__icon-btn:hover {
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+  color: var(--primary);
+  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
+  transform: translateY(-1px);
+}
+.medicine-card__icon-btn.is-info {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+  color: var(--primary);
+  border-color: transparent;
+}
+.medicine-card__icon-btn.danger:hover {
+  background: var(--danger-bg, #fef2f2);
+  color: var(--danger, #dc2626);
+  border-color: var(--danger-border, #fecaca);
+}
+
+/* Short cards on narrow grids: keep the collapsed state comfortable */
+@media (max-width: 420px) {
+  .medicine-card {
+    height: 312px;
+    --panel-h: 104px;
+    --panel-h-open: 190px;
+  }
+}
+
+/* ===================================================
+   MOBILE: 2 medicine cards per row on phones.
+   The expanding panel is disabled below 640px — hover
+   doesn't exist on touch, so the full detail (indication,
+   chips, actions) is shown open at a compact size, and the
+   whole card opens the details modal on tap.
+   =================================================== */
+@media (max-width: 640px) {
+  .medicine-card-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 0.65rem;
+  }
+  .medicine-card {
+    height: 300px;
+    --panel-h: 208px;
+    --panel-h-open: 208px;
+  }
+  .medicine-card:hover,
+  .medicine-card:focus-within { transform: none; }
+  /* No hover on touch — the panel is fully open by default */
+  .medicine-card__more { opacity: 1; transform: none; }
+  .medicine-card__panel { padding: 0.7rem 0.7rem 0.6rem; }
+  .medicine-card__title { font-size: 0.88rem; }
+  .medicine-card__subtitle { font-size: 0.66rem; }
+  .medicine-card__indication { font-size: 0.66rem; line-height: 1.45; -webkit-line-clamp: 3; }
+  .medicine-card__indication-label { font-size: 0.56rem; }
+  .medicine-card .chip { font-size: 0.56rem; padding: 0.12rem 0.4rem; }
+  .medicine-card__footer { padding-top: 0.4rem; flex-wrap: wrap; gap: 0.35rem; }
+  .medicine-card__stats { font-size: 0.6rem; }
+  .medicine-card__stats span { white-space: normal; }
+  .medicine-card__icon-btn { width: 26px; height: 26px; border-radius: 8px; }
+  .medicine-card__actions { gap: 0.25rem; }
+  .medicine-card__status { font-size: 0.56rem; padding: 0.14rem 0.45rem; top: 0.45rem; left: 0.45rem; }
+  .medicine-card__panel::before { display: none; }
+}
+
+/* Genuine tiny phones: 2 columns kept, text shrinks to minimum readable size */
+@media (max-width: 380px) {
+  .medicine-card-grid { gap: 0.5rem; }
+  .medicine-card { height: 272px; --panel-h: 184px; --panel-h-open: 184px; }
+  .medicine-card__title { font-size: 0.8rem; }
+  .medicine-card__subtitle { font-size: 0.6rem; }
+  .medicine-card__indication { font-size: 0.58rem; }
+  .medicine-card .chip { font-size: 0.5rem; }
 }

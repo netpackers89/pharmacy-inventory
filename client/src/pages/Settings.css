@@ -114,6 +114,7 @@
 .tbl-action-btn:hover { filter: brightness(0.96); }
 .tbl-action-btn.edit { background: var(--info-bg); color: var(--info); }
 .tbl-action-btn.deactivate { background: var(--danger-bg); color: var(--danger); }
+.tbl-action-btn.delete { background: var(--danger-bg); color: var(--danger); border: 1px solid rgba(220, 38, 38, 0.35); }
 .tbl-action-btn.activate { background: var(--success-bg); color: var(--success); }
 .tbl-action-btn.reset { background: var(--warning-bg); color: var(--warning); }
 

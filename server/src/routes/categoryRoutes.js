@@ -21,5 +21,6 @@ router.put('/subcategories/:id/status', requireAdmin, ctrl.setSubCategoryStatus)
 router.post('/', requireAdmin, ctrl.addCategory);
 router.put('/:id', requireAdmin, ctrl.updateCategory);
 router.put('/:id/status', requireAdmin, ctrl.setCategoryStatus);
+router.delete('/:id', requireAdmin, ctrl.deleteCategory);
 
 module.exports = router;

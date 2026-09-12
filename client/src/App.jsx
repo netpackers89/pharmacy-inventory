@@ -9,6 +9,7 @@ import { BarcodeModal } from './components/BarcodeModal';
 import { AuthPage } from './pages/AuthPage';
 import { Dashboard } from './pages/Dashboard';
 import { Drugs } from './pages/Drugs';
+import { Import } from './pages/Import';
 import { Inventory } from './pages/Inventory';
 import { POS } from './pages/POS';
 import { Reports } from './pages/Reports';
@@ -16,6 +17,7 @@ import { Settings } from './pages/Settings';
 import { Suppliers } from './pages/Suppliers';
 
 import { QrCode, EyeOff } from 'lucide-react';
+import { LiveIndicator } from './components/LiveIndicator';
 import './styles/global.css';
 import './styles/components.css';
 
@@ -85,15 +87,27 @@ export function AppContent() {
         />
 
         <main className="content-area">
+          <LiveIndicator />
           {activePage === 'dashboard' && <Dashboard onNavigate={(page) => setActivePage(page)} />}
           {activePage === 'drugs' && (
             <Drugs
               onOpenPOS={() => setActivePage('pos')}
               prefillCode={registerCode}
               onConsumePrefill={() => setRegisterCode(null)}
+              onNavigateImport={() => setActivePage('import')}
             />
           )}
-          {activePage === 'inventory' && <Inventory />}
+          {activePage === 'inventory' && <Inventory onNavigate={(page) => setActivePage(page)} />}
+          {activePage === 'import' && (
+            isGuest ? (
+              <GuestOnlyPage
+                title="Import is unavailable in Guest Mode"
+                description="Bulk importing medicines and stock requires a pharmacy staff account."
+              />
+            ) : (
+              <Import />
+            )
+          )}
           {activePage === 'suppliers' && <Suppliers />}
           {activePage === 'pos' && (
             isGuest ? (

@@ -171,6 +171,51 @@ exports.updateCategory = async (req, res) => {
   }
 };
 
+/**
+ * DELETE /api/categories/:id — ADMIN ONLY, audited.
+ * PERMANENT deletion is allowed ONLY when the category is completely safe to
+ * remove: it has no medicines and no subcategories. Whenever a category is
+ * already referenced (or has children), permanent deletion is refused —
+ * operators must Deactivate it instead so historical records stay intact.
+ */
+exports.deleteCategory = async (req, res) => {
+  try {
+    const { id } = req.params;
+
+    const existing = await db.query(
+      'SELECT category_id, name, status FROM categories WHERE category_id = $1',
+      [id]
+    );
+    if (!existing.rows.length) return res.status(404).json({ error: 'Category not found' });
+
+    const cat = existing.rows[0];
+
+    const subCount = await db.query(
+      'SELECT COUNT(*)::int AS count FROM sub_categories WHERE category_id = $1',
+      [id]
+    );
+    const medCount = await db.query(
+      'SELECT COUNT(*)::int AS count FROM medicines WHERE category_id = $1',
+      [id]
+    );
+
+    if (subCount.rows[0].count > 0 || medCount.rows[0].count > 0) {
+      return res.status(409).json({
+        error: `"${cat.name}" is in use and cannot be permanently deleted. It has ${medCount.rows[0].count} medicine(s) and ${subCount.rows[0].count} subcategor(ies). Deactivate it instead to keep records intact.`,
+      });
+    }
+
+    await db.query('DELETE FROM categories WHERE category_id = $1', [id]);
+
+    await audit(req, 'DELETE_CATEGORY', `Administrator permanently deleted category "${cat.name}"`, id, 'category', { name: cat.name, status: cat.status }, null);
+
+    res.json({ message: `Category "${cat.name}" deleted` });
+  } catch (err) {
+    console.error('[DELETE CATEGORY]', err.message);
+    res.status(500).json({ error: 'Failed to delete category' });
+  }
+};
+
 /** PUT /api/categories/:id/status { status } — ADMIN ONLY, audited with old/new values */
 exports.setCategoryStatus = async (req, res) => {
   try {

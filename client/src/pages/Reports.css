@@ -1,5 +1,20 @@
 /* Reports.css — themed via neutral tokens */
 
+/* ── Pagination controls ── */
+.pagination-controls {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  padding: 1rem;
+  border-top: 1px solid var(--border);
+}
+.pagination-info {
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
 .reports-page {}
 
 .reports-tabs {

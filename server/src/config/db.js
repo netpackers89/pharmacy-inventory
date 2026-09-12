@@ -56,6 +56,9 @@ const initializeDB = async () => {
     `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS description TEXT`,
     `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
     `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS image_url TEXT`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS mass NUMERIC(12, 3)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS mass_unit VARCHAR(10)`,
   ];
   // System-level security events (failed logins of unknown accounts,
   // lockouts) have NO user row — audit columns must be nullable.
@@ -86,7 +89,9 @@ const initializeDB = async () => {
       CREATE TABLE IF NOT EXISTS categories (
           category_id bigserial PRIMARY KEY,
           name VARCHAR(100) UNIQUE NOT NULL,
-          status VARCHAR(255) CHECK (status IN('ACTIVE', 'INACTIVE')) NOT NULL DEFAULT 'ACTIVE'
+          status VARCHAR(255) CHECK (status IN('ACTIVE', 'INACTIVE')) NOT NULL DEFAULT 'ACTIVE',
+          created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
 
       CREATE TABLE IF NOT EXISTS sub_categories (
@@ -94,6 +99,8 @@ const initializeDB = async () => {
           category_id BIGINT NOT NULL REFERENCES categories(category_id),
           name VARCHAR(100) NOT NULL,
           status VARCHAR(255) CHECK (status IN('ACTIVE', 'INACTIVE')) NOT NULL DEFAULT 'ACTIVE',
+          created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           UNIQUE(category_id, name)
       );
 
@@ -105,6 +112,8 @@ const initializeDB = async () => {
           brand_name VARCHAR(150),
           strength VARCHAR(100) NOT NULL,
           dosage_form VARCHAR(100) NOT NULL,
+          mass NUMERIC(12, 3),
+          mass_unit VARCHAR(10),
           manufacturer VARCHAR(150),
           country VARCHAR(100),
           route VARCHAR(100),
@@ -118,6 +127,7 @@ const initializeDB = async () => {
           reorder_level INTEGER DEFAULT 50,
           max_level INTEGER DEFAULT 500,
           status VARCHAR(255) CHECK (status IN('ACTIVE', 'INACTIVE')) NOT NULL DEFAULT 'ACTIVE',
+          image_url TEXT,
           created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -289,6 +299,8 @@ const initializeDB = async () => {
       ALTER TABLE medicines ADD COLUMN IF NOT EXISTS country VARCHAR(100);
       ALTER TABLE medicines ADD COLUMN IF NOT EXISTS reorder_level INTEGER DEFAULT 50;
       ALTER TABLE medicines ADD COLUMN IF NOT EXISTS max_level INTEGER DEFAULT 500;
+      ALTER TABLE medicines ADD COLUMN IF NOT EXISTS mass DECIMAL(12,4);
+      ALTER TABLE medicines ADD COLUMN IF NOT EXISTS mass_unit VARCHAR(20) CHECK (mass_unit IN('mg','g','kg','mcg','μg','ug')) DEFAULT 'mg';
 
       ALTER TABLE batches ADD COLUMN IF NOT EXISTS minimum_stock INTEGER DEFAULT 0;
       ALTER TABLE batches ADD COLUMN IF NOT EXISTS maximum_stock INTEGER;
@@ -319,6 +331,11 @@ const initializeDB = async () => {
       ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS medicine_id BIGINT REFERENCES medicines(medicine_id);
       ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reference_type VARCHAR(50);
       ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reason VARCHAR(100);
+      -- Categories / subcategories timestamp columns used by the controllers
+      ALTER TABLE categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
+      ALTER TABLE categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
+      ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
+      ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
     `);
 
     // Add indexes for performance
@@ -356,6 +373,27 @@ const initializeDB = async () => {
         `);
     } catch (alterErr) {
         console.warn('Alter table skipped or failed:', alterErr.message);
+    }
+
+    // Existing imports or restored databases can leave serial sequences
+    // behind the highest stored ID, causing otherwise valid inserts to fail.
+    // Keep all generated primary keys aligned, especially batches during resupply.
+    for (const [table, column] of [
+      ['medicines', 'medicine_id'],
+      ['batches', 'batch_id'],
+      ['stock_movements', 'movement_id'],
+      ['suppliers', 'supplier_id'],
+      ['categories', 'category_id'],
+      ['sub_categories', 'sub_category_id'],
+      ['audit_logs', 'audit_id'],
+    ]) {
+      await client.query(`
+        SELECT setval(
+          pg_get_serial_sequence('${table}', '${column}'),
+          COALESCE((SELECT MAX(${column}) FROM ${table}), 0) + 1,
+          false
+        )
+      `);
     }
 
     // Seed Defaults
