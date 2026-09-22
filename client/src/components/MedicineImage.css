@@ -1,17 +1,35 @@
-/* ── Medicine image (lazy, cropped, rounded) ────────────────────────────── */
+/* ── Medicine image system ─────────────────────────────────────────────── */
 
-.medicine-card__image {
+/*
+ * Predictable, non-jumping image container: the FULL class used by the
+ * details view, card grids and POS. aspect-ratio reserves the exact space
+ * BEFORE the image loads (no layout shift), object-fit: contain shows the
+ * complete medicine/package without stretching, and the surface background
+ * doubles as a "skeleton" while decoding.
+ */
+.medicine-image {
   width: 100%;
-  height: 132px;
-  object-fit: cover;
+  aspect-ratio: 1 / 1;
+  object-fit: contain;
   display: block;
   background: var(--surface-alt, #eef4ff);
   border-radius: inherit;
 }
+
+/* Card backdrop image — fills the fixed-height media area without warping. */
+.medicine-card__image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+  object-position: center;
+  background: var(--surface-alt, #eef4ff);
+}
+
 .learn-modal__img {
   width: 108px;
   height: 108px;
-  object-fit: cover;
+  object-fit: contain;
   border-radius: 14px;
   flex: 0 0 auto;
   background: var(--surface-alt, #eef4ff);

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getAuditLogs, exportAuditLogs, getAuditMeta } = require('../controllers/auditController');
+const { getAuditLogs, exportAuditLogs, getAuditMeta, getArchiveOverview, downloadArchive } = require('../controllers/auditController');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 
 /*
@@ -10,8 +10,10 @@ const { authenticate, requireAdmin } = require('../middleware/auth');
  *
  * NOTE: specific routes must be registered BEFORE the generic '/' route.
  */
-router.get('/', authenticate, requireAdmin, getAuditLogs);
-router.get('/export', authenticate, requireAdmin, exportAuditLogs);
 router.get('/meta/actions', authenticate, requireAdmin, getAuditMeta);
+router.get('/archives', authenticate, requireAdmin, getArchiveOverview);
+router.get('/archives/:id/download', authenticate, requireAdmin, downloadArchive);
+router.get('/export', authenticate, requireAdmin, exportAuditLogs);
+router.get('/', authenticate, requireAdmin, getAuditLogs);
 
 module.exports = router;

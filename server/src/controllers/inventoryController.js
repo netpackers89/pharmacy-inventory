@@ -215,7 +215,10 @@ exports.getStock = async (req, res) => {
                     m.generic_name,
                     m.brand_name,
                     m.strength,
+                    m.image_url,
+                    m.dosage_form,
                     COALESCE(m.prescription_type, 'OTC') AS prescription_type,
+                    m.status,
                     b.batch_number,
                     b.expiry_date,
                     b.barcode,
@@ -225,10 +228,11 @@ exports.getStock = async (req, res) => {
                     b.packaging_unit,
                     b.units_per_package AS strip_size,
                     (b.stock_quantity / GREATEST(b.units_per_package, 1)) AS units_available,
-                    b.status
+                    b.status AS batch_status
                 FROM batches b
                 JOIN medicines m ON m.medicine_id = b.medicine_id
                 WHERE b.status != 'INACTIVE'
+                  AND m.status = 'ACTIVE'
                   AND (
                     REPLACE(REPLACE(LOWER(CAST(b.barcode AS TEXT)), ' ', ''), '-', '') = REPLACE(REPLACE(LOWER($1), ' ', ''), '-', '')
                     OR REPLACE(REPLACE(LOWER(CAST(b.qr_code AS TEXT)), ' ', ''), '-', '') = REPLACE(REPLACE(LOWER($1), ' ', ''), '-', '')
@@ -263,6 +267,8 @@ exports.getStock = async (req, res) => {
                     m.generic_name,
                     m.brand_name,
                     m.strength,
+                    m.image_url,
+                    m.dosage_form,
                     m.created_at,
                     COALESCE(m.prescription_type, 'OTC') AS prescription_type,
                     COALESCE(SUM(b.stock_quantity), 0) AS stock_on_hand,
@@ -298,7 +304,7 @@ exports.getStock = async (req, res) => {
                     m.status
                 FROM medicines m
                 LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
-                GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.created_at, m.prescription_type, m.status
+                GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.created_at, m.prescription_type, m.status, m.image_url, m.dosage_form
                 ORDER BY ${sortColumn} ${order} NULLS LAST, m.generic_name ASC, m.medicine_id ASC
                 LIMIT ${limitNum} OFFSET ${offset}
             `);
@@ -355,6 +361,7 @@ exports.getStock = async (req, res) => {
                 m.status
             FROM medicines m
             LEFT JOIN batches b ON m.medicine_id = b.medicine_id AND b.status != 'INACTIVE'
+            WHERE m.status = 'ACTIVE'
             GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.created_at, m.prescription_type, m.status
             ORDER BY ${sortColumn} ${order} NULLS LAST, m.generic_name ASC, m.medicine_id ASC
         `);
@@ -597,9 +604,12 @@ exports.getBinCardDetail = async (req, res) => {
         const sortDir = order.toUpperCase() === 'DESC' ? 'DESC' : 'ASC';
 
         const medResult = await db.query(`
-            SELECT m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.reorder_level, m.max_level, m.status, c.name as category_name, 
+            SELECT m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.route,
+                   m.prescription_type, m.image_url, m.reorder_level, m.max_level, m.status,
+                   c.name as category_name,
                    COALESCE(SUM(b.stock_quantity),0) as total_stock,
                    COUNT(DISTINCT b.batch_id) as batch_count,
+                   MIN(b.expiry_date) FILTER (WHERE b.status != 'INACTIVE' AND b.expiry_date >= CURRENT_DATE AND b.stock_quantity > 0) as nearest_expiry,
                    SUM(CASE WHEN b.expiry_date <= CURRENT_DATE + INTERVAL '90 days' THEN 1 ELSE 0 END) as expiring_soon_count,
                    COALESCE(AVG(b.buy_price), 0) as avg_purchase_price,
                    COALESCE(SUM(b.stock_quantity * b.buy_price), 0) as stock_value
@@ -607,12 +617,43 @@ exports.getBinCardDetail = async (req, res) => {
             LEFT JOIN batches b ON b.medicine_id = m.medicine_id AND b.status != 'INACTIVE'
             LEFT JOIN categories c ON m.category_id = c.category_id
             WHERE m.medicine_id = $1
-            GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.reorder_level, m.max_level, m.status, c.name
+            GROUP BY m.medicine_id, m.generic_name, m.brand_name, m.strength, m.dosage_form, m.route,
+                     m.prescription_type, m.image_url, m.reorder_level, m.max_level, m.status, c.name
         `, [medicine_id]);
 
         if (medResult.rows.length === 0) {
             return res.status(404).json({ error: 'Medicine not found' });
         }
+
+        /* Consumption analytics: AMC (Average Monthly Consumption) is derived
+           from units sold over the last 90 days ÷ 3 — batch-level sales are
+           aggregated up to the medicine, never mixed into medicine master data. */
+        const usageRes = await db.query(`
+            SELECT
+                COALESCE(SUM(si.quantity), 0)::int AS units_90d,
+                (SELECT COALESCE(SUM(si2.quantity), 0)::int
+                   FROM sale_items si2
+                   JOIN batches b2 ON si2.batch_id = b2.batch_id
+                   JOIN sales s2 ON si2.sale_id = s2.sale_id
+                  WHERE b2.medicine_id = $1 AND s2.status = 'COMPLETED'
+                ) AS units_all_time,
+                (SELECT MAX(s3.sale_date)
+                   FROM sale_items si3
+                   JOIN batches b3 ON si3.batch_id = b3.batch_id
+                   JOIN sales s3 ON si3.sale_id = s3.sale_id
+                  WHERE b3.medicine_id = $1 AND s3.status = 'COMPLETED'
+                ) AS last_sold_at
+            FROM sale_items si
+            JOIN batches b ON si.batch_id = b.batch_id
+            JOIN sales s ON si.sale_id = s.sale_id
+            WHERE b.medicine_id = $1 AND s.status = 'COMPLETED'
+              AND s.sale_date >= CURRENT_DATE - INTERVAL '90 days'
+        `, [medicine_id]);
+        const usage = usageRes.rows[0] || {};
+        const amc = Math.round(((parseInt(usage.units_90d) || 0) / 3) * 10) / 10; // units/month
+        const totalStock = parseInt(medResult.rows[0].total_stock) || 0;
+        const reorderLevel = parseInt(medResult.rows[0].reorder_level) || 0;
+        const monthsOfCover = amc > 0 ? Math.round((totalStock / amc) * 10) / 10 : null;
         
         // Build dynamic WHERE clauses for ledger filters
         const conditions = ['b.medicine_id = $1'];
@@ -686,7 +727,7 @@ exports.getBinCardDetail = async (req, res) => {
         `, [medicine_id]);
 
                                                 res.json({
-                    medicine: medResult.rows[0],
+                    medicine: { ...medResult.rows[0], amc, months_of_cover: monthsOfCover, units_sold_all_time: parseInt(usage.units_all_time) || 0, last_sold_at: usage.last_sold_at || null },
                     ledger: ledgerResult.rows,
                     ledgerPagination: ledgerTotal !== null ? {
                         total: ledgerTotal,

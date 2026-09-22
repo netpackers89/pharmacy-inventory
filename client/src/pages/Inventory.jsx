@@ -12,6 +12,9 @@ import { useGuestGuard } from '../hooks/useGuestGuard';
 import { downloadCsv } from '../utils/csv';
 import { TableSkeleton, EmptyState, ErrorState } from '../components/Feedback';
 import { Pagination } from '../components/ui';
+import { MedicineLearnModal } from '../components/MedicineLearnModal';
+import { MedicineDeleteModal } from '../components/MedicineDeleteModal';
+import { MedicineImage } from '../components/MedicineImage';
 import { socket } from '../services/socket';
 
 const PRIORITY_META = {
@@ -60,7 +63,7 @@ const calculateWorksheet = (input) => {
   return { amc, safetyStock, reorderLevel, maxTarget, rawOrder, orderQty, totalCost: orderQty * Number(input.unitPrice) };
 };
 
-export const Inventory = ({ onNavigate }) => {
+export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
   const { user } = useAuth();
   const { toast } = useToast();
   const guard = useGuestGuard();
@@ -79,6 +82,15 @@ export const Inventory = ({ onNavigate }) => {
   const [loading, setLoading] = useState(false);
   const [loadError, setLoadError] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
+
+  /* Status filter for the Stock list (client-side over the loaded page) */
+  const [stockStatusFilter, setStockStatusFilter] = useState('ALL');
+
+  /* Medicine Details view + permanent-delete flow */
+  const isAdmin = String(user?.role || '').toUpperCase() === 'ADMIN';
+  const [detailMedId, setDetailMedId] = useState(null);
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deleting, setDeleting] = useState(false);
 
   /* Pagination & Sorting states */
   const [stockPage, setStockPage] = useState(1);
@@ -220,13 +232,16 @@ export const Inventory = ({ onNavigate }) => {
   /* Filtered datasets — CSV export respects these too */
   const filteredStock = useMemo(() => {
     const q = searchQuery.trim().toLowerCase();
-    if (!q) return stockList;
-    return stockList.filter(item =>
+    let list = stockList;
+    if (stockStatusFilter === 'ACTIVE') list = list.filter((i) => i.status === 'ACTIVE');
+    else if (stockStatusFilter === 'INACTIVE') list = list.filter((i) => i.status !== 'ACTIVE');
+    if (!q) return list;
+    return list.filter(item =>
       item.generic_name?.toLowerCase().includes(q) ||
       item.brand_name?.toLowerCase().includes(q) ||
       item.strength?.toLowerCase().includes(q)
     );
-  }, [stockList, searchQuery]);
+  }, [stockList, searchQuery, stockStatusFilter]);
 
   const filteredMovements = useMemo(() => movements, [movements]);
 
@@ -368,6 +383,59 @@ export const Inventory = ({ onNavigate }) => {
     if (!savingStock) setIsAddStockModalOpen(false);
   };
 
+  /* Permanent-delete from the Inventory Details view (admin only). */
+  const handleRequestDelete = (med) => {
+    if (!isAdmin) { toast.warning('Only administrators can permanently delete medicines.'); return; }
+    setDeleteTarget(med);
+  };
+
+  /*
+   * Details-view actions (same set as the Drug Directory):
+   *  - Edit     → opens the medicine form on the Drug Directory, pre-filled.
+   *  - Sell     → hands this EXACT medicine (id + batch) to the POS cart.
+   *  - Resupply → opens the Add Stock modal with the medicine pre-selected.
+   */
+  const handleEditFromDetails = (med) => {
+    if (!med?.medicine_id) return;
+    setDetailMedId(null);
+    if (onEditMedicine) onEditMedicine(med);
+    else toast.info('Open the Drug Directory to edit this medicine.');
+  };
+
+  const handleSellFromDetails = (med) => {
+    if (!med?.medicine_id) return;
+    setDetailMedId(null);
+    if (onSellMedicine) onSellMedicine(med);
+    else if (onNavigate) onNavigate('pos');
+  };
+
+  const handleResupplyFromDetails = (med) => {
+    if (!med?.medicine_id) return;
+    setDetailMedId(null);
+    guard(() => {
+      setStockForm({ ...emptyStockForm, medicine_id: String(med.medicine_id) });
+      setIsAddStockModalOpen(true);
+    });
+  };
+  const confirmPermanentDelete = async () => {
+    if (!deleteTarget) return;
+    setDeleting(true);
+    try {
+      const res = await medicinesAPI.delete(String(deleteTarget.medicine_id));
+      toast.success(res?.data?.message || `${deleteTarget.generic_name || 'Medicine'} permanently deleted.`);
+      setDeleteTarget(null);
+      setDetailMedId(null);
+      loadData();
+    } catch (err) {
+      const serverMsg = err.response?.data?.error;
+      if (err.response?.status === 409) toast.error(serverMsg || 'Cannot delete: this medicine has historical records.');
+      else if (err.response?.status === 403) toast.error('Administrator permission required to delete medicines.');
+      else toast.error(serverMsg || 'Unable to delete medicine.');
+    } finally {
+      setDeleting(false);
+    }
+  };
+
   const handleExport = () => {
     const dataset = activeTab === 'movements'
       ? 'medicine-history'
@@ -465,6 +533,24 @@ export const Inventory = ({ onNavigate }) => {
             </button>
           </div>
 
+          {/* ── STATUS FILTER (All / Active / Inactive) ── */}
+          <div className="inv-status-filter">
+            {[
+              { key: 'ALL', label: 'All' },
+              { key: 'ACTIVE', label: 'Active' },
+              { key: 'INACTIVE', label: 'Inactive' },
+            ].map((t) => (
+              <button
+                key={`sf-${t.key}`}
+                type="button"
+                className={`inv-status-btn ${stockStatusFilter === t.key ? 'active' : ''}`}
+                onClick={() => setStockStatusFilter(t.key)}
+              >
+                {t.label}
+              </button>
+            ))}
+          </div>
+
           {/* ── SORT CONTROLS ── */}
           <div className="inv-sort-row">
             <span className="sort-label">Sort by:</span>
@@ -517,9 +603,19 @@ export const Inventory = ({ onNavigate }) => {
                     </thead>
                     <tbody>
                       {filteredStock.map(item => (
-                        <tr key={item.medicine_id}>
-                          <td><strong className="td-strong">{item.generic_name}</strong>{item.brand_name ? ` (${item.brand_name})` : ''}</td>
-                          <td>{item.strength}</td>
+                        <tr key={item.medicine_id} onClick={() => setDetailMedId(item.medicine_id)} style={{ cursor: 'pointer' }}>
+                          <td>
+                            <div className="stock-med-cell">
+                              <span className="stock-med-thumb" aria-hidden="true">
+                                <MedicineImage className="medicine-image" src={item.image_url} alt={item.generic_name} />
+                              </span>
+                              <span className="stock-med-text">
+                                <strong className="td-strong">{item.generic_name}</strong>
+                                {item.brand_name ? <small className="muted-line">({item.brand_name})</small> : null}
+                              </span>
+                            </div>
+                          </td>
+                          <td>{item.strength}{item.dosage_form ? <small className="muted-line">{item.dosage_form}</small> : null}</td>
                           <td><small className="muted-line">{(item.packaging_unit || 'SINGLE_DOSE').replace('_',' ')}{item.strip_size > 1 ? ` · ${item.strip_size}/unit` : ''}</small></td>
                           <td>
                             <span className={`badge ${Number(item.stock_on_hand) === 0 ? 'badge-danger' : Number(item.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
@@ -530,16 +626,9 @@ export const Inventory = ({ onNavigate }) => {
                           <td style={{ textAlign: 'right' }}>
                             <button
                               className="btn btn-secondary btn-sm"
-                              onClick={() => {
-                                setSelectedBinCardMedicine({
-                                  medicine_id: item.medicine_id, generic_name: item.generic_name,
-                                  brand_name: item.brand_name, strength: item.strength
-                                });
-                                setStockBinCardView(true);
-                                setSelectedBatchFilter('ALL');
-                              }}
+                              onClick={(e) => { e.stopPropagation(); setDetailMedId(item.medicine_id); }}
                             >
-                              <FileText size={14} /> Bin Card
+                              <FileText size={14} /> Details
                             </button>
                           </td>
                         </tr>
@@ -553,28 +642,29 @@ export const Inventory = ({ onNavigate }) => {
                   {filteredStock.map(item => (
                     <div key={item.medicine_id} className="mobile-card stagger-item">
                       <div className="mobile-card-head">
-                        <strong>{item.generic_name}{item.brand_name ? ` (${item.brand_name})` : ''}</strong>
+                        <div className="stock-med-cell">
+                          <span className="stock-med-thumb" aria-hidden="true">
+                            <MedicineImage className="medicine-image" src={item.image_url} alt={item.generic_name} />
+                          </span>
+                          <span className="stock-med-text">
+                            <strong>{item.generic_name}</strong>
+                            {item.brand_name ? <small className="muted-line">{item.brand_name}</small> : null}
+                          </span>
+                        </div>
                         <span className={`badge ${Number(item.stock_on_hand) === 0 ? 'badge-danger' : Number(item.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
                           {item.stock_on_hand} units
                         </span>
                       </div>
                       <div className="mobile-card-meta">
-                        <span>{item.strength} · {(item.packaging_unit || 'SINGLE_DOSE').replace('_',' ')}{item.strip_size > 1 ? ` (${item.strip_size}/unit)` : ''}</span>
+                        <span>{item.strength}{item.dosage_form ? ` · ${item.dosage_form}` : ''} · {(item.packaging_unit || 'SINGLE_DOSE').replace('_',' ')}{item.strip_size > 1 ? ` (${item.strip_size}/unit)` : ''}</span>
                         <span className="badge badge-neutral">{item.status}</span>
                       </div>
                       <div className="mobile-card-actions">
                         <button
                           className="btn btn-secondary btn-sm"
-                          onClick={() => {
-                            setSelectedBinCardMedicine({
-                              medicine_id: item.medicine_id, generic_name: item.generic_name,
-                              brand_name: item.brand_name, strength: item.strength
-                            });
-                            setStockBinCardView(true);
-                            setSelectedBatchFilter('ALL');
-                          }}
+                          onClick={() => setDetailMedId(item.medicine_id)}
                         >
-                          <FileText size={14} /> View Bin Card
+                          <FileText size={14} /> Details
                         </button>
                       </div>
                     </div>
@@ -616,43 +706,77 @@ export const Inventory = ({ onNavigate }) => {
                 </button>
               </div>
 
-              <div className="bincard-title dot-grid">
-                <FileText size={20} />
-                <strong>Bin Card</strong>
-                <span>—</span>
-                <span className="bincard-med-name">
-                  {binCardDetail.medicine.generic_name} {binCardDetail.medicine.strength}
-                </span>
-                {binCardDetail.medicine.brand_name && (
-                  <span className="muted-line">({binCardDetail.medicine.brand_name})</span>
-                )}
+              {/* Medicine identity header — image + full identification */}
+              <div className="bincard-identity">
+                <div className="bincard-identity__img" aria-hidden="true">
+                  <MedicineImage
+                    className="medicine-image"
+                    src={binCardDetail.medicine.image_url}
+                    alt={binCardDetail.medicine.generic_name}
+                  />
+                </div>
+                <div className="bincard-identity__info">
+                  <div className="bincard-title" style={{ border: 'none', padding: 0, margin: 0 }}>
+                    <FileText size={18} />
+                    <span>Bin Card —</span>
+                    <span className="bincard-med-name">
+                      {binCardDetail.medicine.generic_name} {binCardDetail.medicine.strength}
+                    </span>
+                  </div>
+                  {binCardDetail.medicine.brand_name && (
+                    <span className="bincard-identity__brand">
+                      Brand: <strong>{binCardDetail.medicine.brand_name}</strong>
+                    </span>
+                  )}
+                  <div className="bincard-identity__meta">
+                    {[
+                      binCardDetail.medicine.dosage_form,
+                      binCardDetail.medicine.route,
+                      binCardDetail.medicine.prescription_type,
+                      binCardDetail.medicine.category_name,
+                    ].filter(Boolean).map((m, i) => (
+                      <span key={i} className="chip">{m}</span>
+                    ))}
+                    {binCardDetail.medicine.status === 'ACTIVE'
+                      ? <span className="badge badge-success">Active</span>
+                      : <span className="badge badge-danger">Inactive</span>}
+                  </div>
+                </div>
               </div>
 
               {/* Summary cards - Modern card format */}
               <div className="bincard-stats">
                 {[
                   { label: 'Total Stock', value: binCardDetail.medicine.total_stock || 0, cls: 'info' },
-                  { label: 'Available', value: binCardDetail.medicine.total_stock || 0, cls: 'success' },
                   { label: 'Batches', value: binCardDetail.batches?.length || 0, cls: '' },
                   {
-                    label: 'Stock Value',
-                    value: `ETB ${(binCardDetail.batches?.reduce((sum, b) => sum + (parseFloat(b.buy_price || 0) * parseInt(b.quantity || 0)), 0) || 0).toFixed(2)}`,
-                    cls: '',
+                    label: 'AMC (units/mo)',
+                    value: binCardDetail.medicine.amc ?? 0,
+                    cls: 'info',
+                    title: 'Average Monthly Consumption — units sold in the last 90 days ÷ 3',
                   },
                   {
-                    label: 'Avg Cost',
-                    value: `ETB ${(binCardDetail.batches?.length
-                      ? (binCardDetail.batches.reduce((sum, b) => sum + parseFloat(b.buy_price || 0), 0) / binCardDetail.batches.length)
-                      : 0).toFixed(2)}`,
-                    cls: '',
+                    label: 'Months of Cover',
+                    value: binCardDetail.medicine.months_of_cover ?? '—',
+                    cls: (binCardDetail.medicine.months_of_cover != null && binCardDetail.medicine.months_of_cover < 1) ? 'danger' : 'success',
+                    title: 'How long current stock lasts at the average monthly consumption rate',
                   },
                   {
-                    label: 'Expiring Soon',
-                    value: binCardDetail.batches?.filter(b => new Date(b.expiry_date) <= new Date(new Date().setMonth(new Date().getMonth() + 3))).length || 0,
-                    cls: 'danger',
+                    label: 'Units Sold (all time)',
+                    value: (binCardDetail.medicine.units_sold_all_time || 0).toLocaleString(),
+                    cls: '',
                   },
+                  { label: 'Reorder Level', value: binCardDetail.medicine.reorder_level ?? '—', cls: '' },
+                  { label: 'Stock Value', value: `ETB ${parseFloat(binCardDetail.medicine.stock_value || 0).toFixed(2)}`, cls: '' },
+                  { label: 'Avg Cost', value: `ETB ${parseFloat(binCardDetail.medicine.avg_purchase_price || 0).toFixed(2)}`, cls: '' },
+                  {
+                    label: 'Nearest Expiry',
+                    value: binCardDetail.medicine.nearest_expiry ? new Date(binCardDetail.medicine.nearest_expiry).toLocaleDateString('en-GB') : '—',
+                    cls: 'info',
+                  },
+                  { label: 'Expiring ≤ 90d', value: binCardDetail.medicine.expiring_soon_count || 0, cls: 'danger' },
                 ].map(stat => (
-                  <div key={stat.label} className={`bincard-stat ${stat.cls}`}>
+                  <div key={stat.label} className={`bincard-stat ${stat.cls}`} title={stat.title}>
                     <span>{stat.label}</span>
                     <strong>{stat.value}</strong>
                   </div>
@@ -1198,6 +1322,27 @@ export const Inventory = ({ onNavigate }) => {
           </div>
         </div>
       )}
+
+      {/* ── MEDICINE DETAILS VIEW: full action set (Edit / Deactivate / Delete / Sell / Resupply) ── */}
+      {detailMedId && (
+        <MedicineLearnModal
+          medicineId={detailMedId}
+          onClose={() => setDetailMedId(null)}
+          onEdit={handleEditFromDetails}
+          onSell={handleSellFromDetails}
+          onResupply={handleResupplyFromDetails}
+          onDeleteRequest={(med) => { setDetailMedId(null); handleRequestDelete(med); }}
+          onStatusChanged={() => loadData()}
+        />
+      )}
+
+      {/* ── PERMANENT-DELETE CONFIRMATION ── */}
+      <MedicineDeleteModal
+        medicine={deleteTarget}
+        loading={deleting}
+        onConfirm={confirmPermanentDelete}
+        onCancel={() => { if (!deleting) setDeleteTarget(null); }}
+      />
     </div>
   );
 };

@@ -4,6 +4,7 @@ const ctrl = require('../controllers/reportController');
 
 router.get('/overview', ctrl.getOverview);
 router.get('/sales', ctrl.getSalesReport);
+router.get('/sales-series', ctrl.getSalesSeries);
 router.get('/inventory', ctrl.getInventoryReport);
 router.get('/profit', ctrl.getProfitReport);
 router.get('/expiry', ctrl.getExpiryReport);

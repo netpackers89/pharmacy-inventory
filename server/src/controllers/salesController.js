@@ -1,5 +1,8 @@
 const db = require('../config/db');
 const { getIO } = require('../socket');
+const {
+  SELLING_UNITS, UNIT_LABELS, normalizePackaging, baseUnitsFor, configuredPriceFor,
+} = require('../utils/packaging');
 
 exports.getAllSales = async (req, res) => {
   try {
@@ -67,6 +70,26 @@ const FREQUENCY_PER_DAY = {
   Q8H: 3, Q12H: 2, QW: 1 / 7, BIW: 2 / 7,
 };
 
+/*
+ * Doses per day for a frequency code, including the parametric intervals:
+ *   QXH = every X hours (needs frequency_interval)
+ *   QXD = every X days  (needs frequency_interval)
+ * Returns null for PRN/STAT/unknown codes (no per-day cadence).
+ */
+function frequencyPerDay(code, interval) {
+  const key = String(code || '').toUpperCase();
+  if (key === 'QXH') {
+    const x = Number(interval);
+    return Number.isFinite(x) && x > 0 ? 24 / x : null;
+  }
+  if (key === 'QXD') {
+    const x = Number(interval);
+    return Number.isFinite(x) && x > 0 ? 1 / x : null;
+  }
+  const perDay = FREQUENCY_PER_DAY[key];
+  return perDay === undefined ? null : perDay;
+}
+
 exports.createSale = async (req, res) => {
   const client = await db.getClient();
   try {
@@ -128,17 +151,13 @@ exports.createSale = async (req, res) => {
        * QUANTITY: single doses to dispense. Validated as a positive integer —
        * negative or zero quantities can never create stock.
        */
-      let qtyNeeded = parseInt(item.quantity, 10);
-      if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
-        throw new Error(`Invalid quantity for medicine ID ${medId}`);
-      }
-
-      /*
-       * PRESCRIPTION TYPE comes from the DATABASE, never from React.
-       * The medicine record is authoritative for OTC/PRESCRIPTION/CONTROLLED.
+       /* The medicine record is authoritative for OTC/PRESCRIPTION/CONTROLLED.
        */
       const medRes = await client.query(
-        `SELECT medicine_id, generic_name, brand_name, strength, prescription_type
+        `SELECT medicine_id, generic_name, brand_name, strength, prescription_type, status,
+                dosage_form, base_unit, units_per_strip, strips_per_inner_box,
+                inner_boxes_per_outer_box, allow_open_package,
+                sell_price_unit, sell_price_strip, sell_price_inner_box, sell_price_outer_box
            FROM medicines WHERE medicine_id = $1`,
         [medId]
       );
@@ -146,7 +165,68 @@ exports.createSale = async (req, res) => {
         throw new Error(`Medicine ID ${medId} does not exist`);
       }
       const medicine = medRes.rows[0];
+      if (medicine.status !== 'ACTIVE') {
+        throw new Error(
+          `Inactive medicine "${medicine.generic_name}" cannot be sold. This medicine is deactivated — please contact an administrator to activate it.`
+        );
+      }
       const rxType = (medicine.prescription_type || 'OTC').toUpperCase();
+
+      /*
+       * UNIT CONVERSION — performed HERE on the server from the medicine's own
+       * packaging configuration. The frontend may suggest a dispensing unit
+       * and package quantity, but the base-unit impact of every sale is
+       * recomputed from the database (the client is never trusted):
+       *
+       *   quantity_sold = package_qty x base units per dispensing unit
+       *
+       * A legacy client that still sends only `quantity` (single doses)
+       * keeps working unchanged.
+       */
+      const packaging = normalizePackaging(medicine);
+      const dispensingUnit = String(item.dispensing_unit || 'SINGLE_DOSE').toUpperCase();
+      if (!SELLING_UNITS.includes(dispensingUnit)) {
+        throw new Error(`Invalid dispensing unit for medicine ID ${medId}`);
+      }
+      const unitsPerPackage = baseUnitsFor(packaging, dispensingUnit);
+      if (unitsPerPackage === null) {
+        throw new Error(
+          `"${medicine.generic_name}" has no ${UNIT_LABELS[dispensingUnit]} packaging configured — set up its packaging to sell in that unit`
+        );
+      }
+
+      // Broken-package rule: whether single doses may be split out of a
+      // strip/box is a packaging rule, never something the till guesses.
+      if (
+        dispensingUnit === 'SINGLE_DOSE' &&
+        packaging.units_per_strip !== null &&
+        !packaging.allow_open_package
+      ) {
+        throw new Error(
+          `"${medicine.generic_name}" must be dispensed as whole strip(s)/box(es) — individual single doses cannot be split out`
+        );
+      }
+
+      let packageQty;
+      let qtyNeeded;
+      if (item.package_qty !== undefined && item.package_qty !== null && item.package_qty !== '') {
+        packageQty = Number(item.package_qty);
+        if (!Number.isInteger(packageQty) || packageQty <= 0) {
+          throw new Error(`Invalid package quantity for medicine ID ${medId}`);
+        }
+        qtyNeeded = packageQty * unitsPerPackage;
+      } else {
+        /*
+         * Legacy payload: `quantity` holds single doses (base units).
+         * Validated as a positive integer — negative or zero quantities can
+         * never create stock.
+         */
+        qtyNeeded = parseInt(item.quantity, 10);
+        if (!Number.isFinite(qtyNeeded) || qtyNeeded <= 0) {
+          throw new Error(`Invalid quantity for medicine ID ${medId}`);
+        }
+        packageQty = qtyNeeded; // recorded as N single doses
+      }
 
       if (rxType === 'CONTROLLED') {
         // Controlled substances require documented authorization at checkout.
@@ -170,8 +250,8 @@ exports.createSale = async (req, res) => {
           );
         }
         // Backend re-validates the required-dose calculation (read-only rule).
-        const perDay = FREQUENCY_PER_DAY[String(item.frequency_code).toUpperCase()];
-        if (perDay !== undefined) {
+        const perDay = frequencyPerDay(item.frequency_code, item.frequency_interval);
+        if (perDay !== null) {
           const expectedMin = Math.ceil(
             Number(item.dose_per_admin) * perDay * Number(item.duration_days)
           );
@@ -222,8 +302,19 @@ exports.createSale = async (req, res) => {
           throw new Error(`Batch ${batch.batch_id} has an invalid price`);
         }
         const dosesPerUnit = Math.max(1, parseInt(batch.units_per_package, 10) || 1);
-        const perDosePrice = unitPrice / dosesPerUnit;
-        const itemTotal = perDosePrice * qtyToTake;
+        const batchPerDosePrice = unitPrice / dosesPerUnit;
+        /*
+         * PRICE PER DISPENSING UNIT: the medicine's configured commercial
+         * price wins when the pharmacist set one (a strip may intentionally
+         * cost more or less than dose-size x N). Otherwise the price is
+         * derived from the batch per-dose price and stays proportional.
+         * `sell_price` stays PER SINGLE DOSE so qty x price = total always.
+         */
+        const configuredPrice = configuredPriceFor(medicine, dispensingUnit);
+        const perBasePrice = configuredPrice !== null
+          ? configuredPrice / unitsPerPackage
+          : batchPerDosePrice;
+        const itemTotal = perBasePrice * qtyToTake;
         calculatedTotal += itemTotal;
 
         batchUpdates.push({
@@ -235,14 +326,16 @@ exports.createSale = async (req, res) => {
         saleItemsRecords.push({
           batch_id: batch.batch_id,
           quantity: qtyToTake,
-          sell_price: perDosePrice,   // per SINGLE DOSE so qty × price = total
+          sell_price: perBasePrice,   // per SINGLE DOSE so qty × price = total
           total_price: itemTotal,
+          package_qty: packageQty,    // how many of dispensing_unit were sold
+          dispensing_unit: dispensingUnit,
           dose_per_admin: item.dose_per_admin || null,
           frequency_code: item.frequency_code || null,
+          frequency_interval: item.frequency_interval || null,
           duration_days: item.duration_days || null,
           route_of_admin: item.route_of_admin || null,
           required_qty: item.required_qty || null,
-          dispensing_unit: item.dispensing_unit || null,
           counseling_note: item.counseling_note || null
         });
 
@@ -258,6 +351,7 @@ exports.createSale = async (req, res) => {
           name: `${medicine.generic_name}${medicine.strength ? ` ${medicine.strength}` : ''}`,
           prescription_type: rxType,
           quantity: qtyToTake,
+          dispensed_as: `${packageQty} x ${UNIT_LABELS[dispensingUnit]} (= ${qtyToTake} single doses)`,
           price: itemTotal.toFixed(2),
         });
       }
@@ -293,12 +387,13 @@ exports.createSale = async (req, res) => {
 
     for (const si of saleItemsRecords) {
         await client.query(`
-            INSERT INTO sale_items (sale_id, batch_id, quantity, sell_price, total_price, dose_per_admin, frequency_code, duration_days, route_of_admin, required_qty, dispensing_unit, counseling_note)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+            INSERT INTO sale_items (sale_id, batch_id, quantity, sell_price, total_price, package_qty, dispensing_unit, dose_per_admin, frequency_code, frequency_interval, duration_days, route_of_admin, required_qty, counseling_note)
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
         `, [
             saleId, si.batch_id, si.quantity, si.sell_price, si.total_price,
-            si.dose_per_admin, si.frequency_code, si.duration_days, si.route_of_admin,
-            si.required_qty, si.dispensing_unit, si.counseling_note
+            si.package_qty, si.dispensing_unit, si.dose_per_admin, si.frequency_code,
+            si.frequency_interval, si.duration_days, si.route_of_admin,
+            si.required_qty, si.counseling_note
         ]);
     }
 
@@ -366,7 +461,7 @@ exports.createSale = async (req, res) => {
   } catch (err) {
     try { await client.query('ROLLBACK'); } catch (_) {}
     console.error('Error creating sale:', err.message);
-    const isClientError = /^(Insufficient stock|Cart must|Invalid |Controlled medicine|Prescription medicine|Each cart|Authenticated staff)/.test(err.message || '');
+    const isClientError = /^(Insufficient stock|Cart must|Invalid |Controlled medicine|Prescription medicine|Each cart|Authenticated staff|Inactive medicine)/.test(err.message || '');
     try {
       await db.query(`
         INSERT INTO audit_logs (user_id, action, module, table_name, description, ip_address, user_agent, session_id, status)

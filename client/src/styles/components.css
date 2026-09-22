@@ -114,6 +114,21 @@
   .form-actions .btn, .form-actions .btn-save { width: 100%; justify-content: center; }
 }
 
+/* Permanent-delete modal (type-to-confirm) */
+.med-delete-impacts {
+  text-align: left; margin: 0.5rem 0 0.75rem 1.1rem;
+  font-size: 0.84rem; color: var(--text-secondary, #475569); line-height: 1.7;
+}
+.med-delete-impacts li { list-style: disc; }
+.med-delete-preserve {
+  text-align: left; font-size: 0.82rem; color: var(--text-muted, #64748b);
+  line-height: 1.55; padding: 0.6rem 0.75rem; border-radius: 8px;
+  background: var(--warning-bg, #fffbeb);
+  border: 1px solid var(--warning-border, #fde68a);
+  margin: 0;
+}
+.med-delete-preserve strong { display: block; color: #92400e; margin-top: 0.25rem; }
+
 /* Shared mobile table/card visibility (used by management screens) */
 .hide-mobile-table { display: none; }
 .show-mobile-table { display: block; }

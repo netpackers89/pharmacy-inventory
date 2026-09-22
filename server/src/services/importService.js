@@ -67,7 +67,9 @@ const FIELD_ALIASES = {
   contraindications: ['contraindications', 'do not use', 'contraindication'],
   side_effects: ['side_effects', 'side effects'],
   warnings: ['warnings', 'serious warnings'],
-  storage_conditions: ['storage_conditions', 'storage'],
+    storage_conditions: ['storage_conditions', 'storage'],
+  pronunciation_english: ['pronunciation_english', 'english_pronunciation', 'english pronunciation', 'pronunciation_en', 'pron_en', 'pronunciation (en)'],
+  pronunciation_amharic: ['pronunciation_amharic', 'amharic_pronunciation', 'amharic pronunciation', 'pronunciation_am', 'pron_am', 'pronunciation (am)'],
   counseling_points: ['counseling_points', 'counseling', 'counseling points'],
   batch_number: ['batch_number', 'batch', 'batch number', 'batchno', 'lot'],
   expiry_date: ['expiry_date', 'expiry', 'expiry date', 'expiration', 'exp'],
@@ -344,7 +346,9 @@ exports.confirmImport = async (rows, userId, mode = 'batch') => {
           clean(row.manufacturer) || null, clean(row.country) || null, clean(row.image_url) || null,
           normalizePrescriptionType(row.prescription_type), category_id, sub_category_id, clean(row.description) || null,
           clean(row.indications) || null, clean(row.contraindications) || null, clean(row.side_effects) || null,
-          clean(row.warnings) || null, clean(row.storage_conditions) || null,
+                    clean(row.warnings) || null, clean(row.storage_conditions) || null,
+          clean(row.pronunciation_english) || null,
+          clean(row.pronunciation_amharic) || null,
         ];
         const medRes = existingMedicineId
           ? await client.query(
@@ -353,16 +357,18 @@ exports.confirmImport = async (rows, userId, mode = 'batch') => {
                route=$7, manufacturer=$8, country=$9, image_url=$10, prescription_type=$11,
                category_id=$12, sub_category_id=$13, description=$14, indications=$15,
                contraindications=$16, side_effects=$17, warnings=$18, storage_conditions=$19,
+               pronunciation_english=$20, pronunciation_amharic=$21,
                updated_at=CURRENT_TIMESTAMP
-             WHERE medicine_id=$20 RETURNING medicine_id`,
+             WHERE medicine_id=$22 RETURNING medicine_id`,
             [...medicineValues, existingMedicineId]
           )
           : await client.query(
           `INSERT INTO medicines
              (generic_name, brand_name, strength, mass, mass_unit, dosage_form, route, manufacturer, country,
               image_url, prescription_type, category_id, sub_category_id, description, indications,
-              contraindications, side_effects, warnings, storage_conditions)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+              contraindications, side_effects, warnings, storage_conditions,
+              pronunciation_english, pronunciation_amharic)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
            RETURNING medicine_id`,
           medicineValues
         );
@@ -452,8 +458,9 @@ exports.confirmImport = async (rows, userId, mode = 'batch') => {
           `INSERT INTO medicines
              (generic_name, brand_name, strength, mass, mass_unit, dosage_form, route, manufacturer, country,
               image_url, prescription_type, category_id, sub_category_id,
-              description, indications, contraindications, side_effects, warnings, storage_conditions)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19) RETURNING medicine_id`,
+              description, indications, contraindications, side_effects, warnings, storage_conditions,
+              pronunciation_english, pronunciation_amharic)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21) RETURNING medicine_id`,
           [
             clean(row.generic_name), clean(row.brand_name) || clean(row.generic_name),
             clean(row.strength), mass_value, mass_unit,
@@ -465,6 +472,8 @@ exports.confirmImport = async (rows, userId, mode = 'batch') => {
             clean(row.description) || null, clean(row.indications) || null,
             clean(row.contraindications) || null, clean(row.side_effects) || null,
             clean(row.warnings) || null, clean(row.storage_conditions) || null,
+            clean(row.pronunciation_english) || null,
+            clean(row.pronunciation_amharic) || null,
           ]
         );
         medicine_id = medRes.rows[0].medicine_id;
@@ -558,6 +567,8 @@ exports.templateRows = {
     side_effects: 'Nausea, rash (rare)',
     warnings: 'Do not exceed 4 g per day',
     storage_conditions: 'Store below 25°C, protect from moisture',
+    pronunciation_english: '',
+    pronunciation_amharic: '',
   }],
   /* Batch / Resupply template — includes ALL fields from the Receive Stock form */
   batch: [{

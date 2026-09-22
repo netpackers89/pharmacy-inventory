@@ -1,15 +1,18 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import './Drugs.css';
-import { Plus, Sparkles, Edit, Search, Check, Download, Pill as PillIcon, PackagePlus, Loader2, BookOpen, LayoutGrid, List as ListIcon, Package, Trash2, Stethoscope } from 'lucide-react';
+import { Plus, Sparkles, Edit, Search, Check, Download, Pill as PillIcon, Loader2, BookOpen, LayoutGrid, List as ListIcon, Trash2, Filter, MoreVertical, Eye, ShoppingCart, Power, PowerOff, PackagePlus } from 'lucide-react';
 import { medicinesAPI, suppliersAPI, aiAPI, categoriesAPI } from '../services/api';
 import { MedicineLearnModal } from '../components/MedicineLearnModal';
+import { MedicineDeleteModal } from '../components/MedicineDeleteModal';
 import { MedicineImage } from '../components/MedicineImage';
+import { PronunciationSpeaker } from '../components/PronunciationSpeaker';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useGuestGuard } from '../hooks/useGuestGuard';
 import { downloadCsv } from '../utils/csv';
+import { getStockStatus, fmtExpiry } from '../utils/stockStatus';
 import { TableSkeleton, EmptyState, ErrorState } from '../components/Feedback';
-import { Pagination, ConfirmDialog } from '../components/ui';
+import { Pagination } from '../components/ui';
 import { socket } from '../services/socket';
 
 const VIEW_PREF_KEY = 'pharm_drug_view';
@@ -22,8 +25,60 @@ const normalizeDosageForm = (value) => {
   return 'Other';
 };
 
-export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImport }) => {
+/*
+ * Three-dot action menu used on medicine cards. Stops the card's own
+ * click (which opens details) and closes on outside click / Escape.
+ */
+const CardMenu = ({ items }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef(null);
+  useEffect(() => {
+    if (!open) return;
+    const onDoc = (e) => { if (ref.current && !ref.current.contains(e.target)) setOpen(false); };
+    const onKey = (e) => { if (e.key === 'Escape') setOpen(false); };
+    document.addEventListener('mousedown', onDoc);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', onDoc);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [open]);
+  return (
+    <div className="medicine-card__menu" ref={ref}>
+      <button
+        type="button"
+        className="medicine-card__menu-btn"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        aria-label="More actions"
+        title="More actions"
+        onClick={(e) => { e.stopPropagation(); setOpen((v) => !v); }}
+      >
+        <MoreVertical size={15} />
+      </button>
+      {open && (
+        <div className="medicine-card__menu-pop" role="menu" onClick={(e) => e.stopPropagation()}>
+          {items.filter(Boolean).map((it) => (
+            <button
+              key={it.key}
+              type="button"
+              role="menuitem"
+              className={it.danger ? 'is-danger' : ''}
+              onClick={(e) => { e.stopPropagation(); setOpen(false); it.onClick(); }}
+            >
+              {it.icon}
+              {it.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
+export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImport, editMedicineId, onConsumeEditMedicine }) => {
   const { user, isGuest } = useAuth();
+  const isAdmin = String(user?.role || '').toUpperCase() === 'ADMIN';
   const { toast } = useToast();
   const guard = useGuestGuard();
 
@@ -59,10 +114,14 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
   const [savingMedicine, setSavingMedicine] = useState(false);
   const [addInitialStock, setAddInitialStock] = useState(false);
 
+  /* Extra filters popover toggle (category, subcategory, dosage, route, rx) */
+  const [filtersOpen, setFiltersOpen] = useState(false);
+
   /* Medicine learning card (Learn More) */
   const [learnMedId, setLearnMedId] = useState(null);
 
-  /* Deactivate (soft delete) flow */
+  /* Permanent-delete flow (type-to-confirm modal). The actual delete is a
+   * server-side safe transaction that blocks medicines with history. */
   const [deleteTarget, setDeleteTarget] = useState(null);
   const [deleting, setDeleting] = useState(false);
 
@@ -109,6 +168,8 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
     sub_category_id: '',
     mass: '',
     mass_unit: 'mg',
+    pronunciation_english: '',
+    pronunciation_amharic: '',
     description: '',
     indications: '',
     contraindications: '',
@@ -266,6 +327,27 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
   }, [prefillCode, isGuest]);
 
   /*
+   * Cross-page intent: the Medicine Details view (opened from Inventory) asked
+   * to edit a medicine. Fetch the fresh master record (the detail payload may
+   * only carry the id) and open the very same Edit form used on this page.
+   */
+  useEffect(() => {
+    if (!editMedicineId) return;
+    if (isGuest) {
+      toast.warning('Editing medicine details requires a pharmacy staff account.');
+      if (onConsumeEditMedicine) onConsumeEditMedicine();
+      return;
+    }
+    let cancelled = false;
+    medicinesAPI.getById(editMedicineId)
+      .then((res) => { if (!cancelled && res?.data) handleOpenEditModal(res.data); })
+      .catch(() => { if (!cancelled) toast.error('Unable to load this medicine for editing.'); })
+      .finally(() => { if (!cancelled && onConsumeEditMedicine) onConsumeEditMedicine(); });
+    return () => { cancelled = true; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editMedicineId, isGuest]);
+
+  /*
    * AI autofill: suggestions are populated into the form for review.
    * The response is labelled (Gemini vs local template) and NEVER silently
    * overwrites fields the user has already filled in.
@@ -286,7 +368,11 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
         contraindications: prev.contraindications || data.contraindication || '',
         side_effects: prev.side_effects || data.side_effects || '',
         warnings: prev.warnings || data.interactions || '',
-        storage_conditions: prev.storage_conditions || data.storage_condition_patient || ''
+        storage_conditions: prev.storage_conditions || data.storage_condition_patient || '',
+        // Pronunciation is an optional guide — AI only suggests it when
+        // confidently known, and it NEVER overrides a value already entered.
+        pronunciation_english: prev.pronunciation_english || data.pronunciation_english || '',
+        pronunciation_amharic: prev.pronunciation_amharic || data.pronunciation_amharic || ''
       }));
 
       if (data.ai_available === false) {
@@ -329,6 +415,8 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
       _assignedCategoryName: med.category_name || '',
       mass: med.mass ?? '',
       mass_unit: med.mass_unit || 'mg',
+      pronunciation_english: med.pronunciation_english || '',
+      pronunciation_amharic: med.pronunciation_amharic || '',
       description: med.description || '',
       indications: med.indications || '',
       contraindications: med.contraindications || '',
@@ -344,22 +432,52 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
   };
 
   /*
-   * Deactivate (soft delete): the API flips the record to INACTIVE so audit
-   * and movement history stay intact — the drug simply disappears from POS
-   * and new transactions.
+   * PERMANENT delete flow. The Details view's Delete action sets
+   * deleteTarget; this runs the safe server transaction and surfaces the
+   * backend's refusal (medicine has history → must deactivate instead).
    */
-  const handleRequestDelete = (med) => guard(() => setDeleteTarget(med));
+  /*
+   * Quick activate / deactivate from the card's ⋮ menu (ADMIN only — the
+   * backend enforces the same rule on the PATCH /status route).
+   */
+  const handleQuickStatus = async (med) => {
+    const next = med.status === 'ACTIVE' ? 'INACTIVE' : 'ACTIVE';
+    try {
+      await medicinesAPI.changeStatus(String(med.medicine_id), next);
+      toast.success(`${next === 'ACTIVE' ? 'Activated' : 'Deactivated'} ${med.generic_name}.`);
+      fetchMedicines();
+    } catch (err) {
+      toast.error(err.response?.data?.error || 'Unable to change medicine status.');
+    }
+  };
 
-  const confirmDeleteMedicine = async () => {
+  const handleRequestDelete = (med) => {
+    if (!isAdmin) {
+      toast.warning('Only administrators can permanently delete medicines.');
+      return;
+    }
+    setDeleteTarget(med);
+  };
+
+  const confirmPermanentDelete = async () => {
     if (!deleteTarget) return;
     setDeleting(true);
     try {
-      await medicinesAPI.delete(String(deleteTarget.medicine_id));
-      toast.success(`${deleteTarget.generic_name || 'Drug'} deactivated.`);
+      const res = await medicinesAPI.delete(String(deleteTarget.medicine_id));
+      toast.success(res?.data?.message || `${deleteTarget.generic_name || 'Medicine'} permanently deleted.`);
       setDeleteTarget(null);
+      setLearnMedId(null);
       fetchMedicines();
     } catch (err) {
-      toast.error('Unable to deactivate drug: ' + (err.response?.data?.error || err.message));
+      const serverMsg = err.response?.data?.error;
+      if (err.response?.status === 409) {
+        // Historical pharmacy records exist — backend refuses destruction.
+        toast.error(serverMsg || 'Cannot delete: this medicine has historical records.');
+      } else if (err.response?.status === 403) {
+        toast.error('Administrator permission required to delete medicines.');
+      } else {
+        toast.error(serverMsg || 'Unable to delete medicine.');
+      }
     } finally {
       setDeleting(false);
     }
@@ -519,37 +637,52 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
         </div>
       </div>
 
-      {/* ── SERVER-SIDE FILTERS (work together) ── */}
-      <div className="drugs-filters">
-        <select className="form-control" style={{ maxWidth: 180 }} value={filters.category_id} onChange={(e) => setFilter('category_id', e.target.value)} aria-label="Filter by category">
-          <option value="">All Categories</option>
-          {categories.map((c) => <option key={`filter-category-${c.category_id}`} value={c.category_id}>{c.name}</option>)}
-        </select>
-        <select className="form-control" style={{ maxWidth: 180 }} value={filters.sub_category_id} onChange={(e) => setFilter('sub_category_id', e.target.value)} disabled={!filters.category_id} aria-label="Filter by subcategory">
-          <option value="">{filters.category_id ? 'All Subcategories' : 'All Subcategories'}</option>
-          {filterSubcategories.map((s) => <option key={`filter-subcategory-${s.sub_category_id}`} value={s.sub_category_id}>{s.name}</option>)}
-        </select>
-        <select className="form-control dosage-select" value={filters.dosage_form} onChange={(e) => setFilter('dosage_form', e.target.value)} aria-label="Filter by dosage form">
-          <option value="">All Dosage Forms</option>
-          {dosageForms.map((form) => <option key={form} value={form}>{form}</option>)}
-        </select>
-        <select className="form-control" style={{ maxWidth: 150 }} value={filters.route} onChange={(e) => setFilter('route', e.target.value)} aria-label="Filter by route">
-          <option value="">All Routes</option>
-          {routes.map((r) => <option key={`filter-route-${r}`} value={r}>{r}</option>)}
-        </select>
-        <select className="form-control" style={{ maxWidth: 150 }} value={filters.prescription_type} onChange={(e) => setFilter('prescription_type', e.target.value)} aria-label="Filter by prescription type">
-          <option value="">All Types</option>
-          {['OTC', 'PRESCRIPTION', 'CONTROLLED'].map((t) => <option key={`filter-rx-${t}`} value={t}>{t}</option>)}
-        </select>
-        <select className="form-control" style={{ maxWidth: 140 }} value={filters.status} onChange={(e) => setFilter('status', e.target.value)} aria-label="Filter by status">
-          <option value="">All Status</option>
-          {['ACTIVE', 'INACTIVE'].map((s) => <option key={`filter-status-${s}`} value={s}>{s}</option>)}
-        </select>
-        {anyFilter && (
-          <button className="btn btn-ghost btn-sm" onClick={() => { setFilters({ category_id: '', sub_category_id: '', dosage_form: '', route: '', prescription_type: '', status: '' }); setPage(1); }}>
-            Clear filters
-          </button>
+            {/* ── STATUS PILLS (inline, always visible) ── */}
+      <div className="drugs-status-pills" role="group" aria-label="Filter by status">
+        <button type="button" className={`status-pill ${filters.status === '' ? 'active' : ''}`} onClick={() => setFilter('status', '')}>All</button>
+        <button type="button" className={`status-pill ${filters.status === 'ACTIVE' ? 'active' : ''}`} onClick={() => setFilter('status', 'ACTIVE')}>Active</button>
+        <button type="button" className={`status-pill ${filters.status === 'INACTIVE' ? 'active' : ''}`} onClick={() => setFilter('status', 'INACTIVE')}>Inactive</button>
+      </div>
+
+      {/* ── MORE FILTERS (compact popover) ── */}
+      <div className="drugs-extra-filters">
+        <button type="button" className="drugs-filter-btn" onClick={() => setFiltersOpen((v) => !v)} aria-label="More filters">
+          <Filter size={15} />
+          <span>More filters</span>
+        </button>
+
+        {filtersOpen && (
+          <div className="drugs-filters-popover" onMouseDown={(e) => e.stopPropagation()}>
+            <div className="drugs-filters-grid">
+              <select className="form-control form-control--sm" value={filters.category_id} onChange={(e) => setFilter('category_id', e.target.value)} aria-label="Filter by category">
+                <option value="">All Categories</option>
+                {categories.map((c) => <option key={`filter-category-${c.category_id}`} value={c.category_id}>{c.name}</option>)}
+              </select>
+              <select className="form-control form-control--sm" value={filters.sub_category_id} onChange={(e) => setFilter('sub_category_id', e.target.value)} disabled={!filters.category_id} aria-label="Filter by subcategory">
+                <option value="">{filters.category_id ? 'All Subcategories' : 'All Subcategories'}</option>
+                {filterSubcategories.map((s) => <option key={`filter-subcategory-${s.sub_category_id}`} value={s.sub_category_id}>{s.name}</option>)}
+              </select>
+              <select className="form-control form-control--sm" value={filters.dosage_form} onChange={(e) => setFilter('dosage_form', e.target.value)} aria-label="Filter by dosage form">
+                <option value="">All Dosage Forms</option>
+                {dosageForms.map((form) => <option key={form} value={form}>{form}</option>)}
+              </select>
+              <select className="form-control form-control--sm" value={filters.route} onChange={(e) => setFilter('route', e.target.value)} aria-label="Filter by route">
+                <option value="">All Routes</option>
+                {routes.map((r) => <option key={`filter-route-${r}`} value={r}>{r}</option>)}
+              </select>
+              <select className="form-control form-control--sm" value={filters.prescription_type} onChange={(e) => setFilter('prescription_type', e.target.value)} aria-label="Filter by prescription type">
+                <option value="">All Types</option>
+                {['OTC', 'PRESCRIPTION', 'CONTROLLED'].map((t) => <option key={`filter-rx-${t}`} value={t}>{t}</option>)}
+              </select>
+            </div>
+            <div className="drugs-filters-popover__foot">
+              <button type="button" className="btn btn-ghost btn-sm" onClick={() => { setFilters({ category_id: '', sub_category_id: '', dosage_form: '', route: '', prescription_type: '', status: '' }); setPage(1); setFiltersOpen(false); }}>
+                Clear all filters
+              </button>
+            </div>
+          </div>
         )}
+        {filtersOpen && <div className="drugs-filters-overlay" onClick={() => setFiltersOpen(false)} />}
       </div>
 
       {/* ── SORT CONTROLS ── */}
@@ -612,92 +745,118 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
           />
         ) : viewMode === 'cards' ? (
           <div className="medicine-card-grid">
-            {medicines.map((med) => (
-              <article
-                key={`medicine-${med.medicine_id}`}
-                className="medicine-card stagger-item"
-                role="button"
-                tabIndex={0}
-                aria-label={`View details for ${med.brand_name || med.generic_name}`}
-                onClick={() => setLearnMedId(med.medicine_id)}
-                onKeyDown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
-                    e.preventDefault();
-                    setLearnMedId(med.medicine_id);
-                  }
-                }}
-              >
-                <div className="medicine-card__media">
-                  <MedicineImage className="medicine-card__image" src={med.image_url} alt={med.generic_name} />
-                  <div className="medicine-card__scrim" aria-hidden="true" />
-                  <span className={`medicine-card__status ${med.status === 'ACTIVE' ? '' : 'inactive'}`}>
-                    {med.status === 'ACTIVE' ? 'Active' : (med.status || 'Inactive')}
-                  </span>
-                </div>
+            {medicines.map((med) => {
+              const st = getStockStatus(med);
+              const stock = parseInt(med.stock_on_hand, 10) || 0;
+              const brandDiffers =
+                med.brand_name &&
+                med.brand_name.trim().toLowerCase() !== (med.generic_name || '').trim().toLowerCase();
 
-                {/* Expanding white panel — slides up on hover to reveal the indication */}
-                <div className="medicine-card__panel">
-                  <h3 className="medicine-card__title">{med.brand_name || med.generic_name}</h3>
-                  <p className="medicine-card__subtitle">
-                    {med.generic_name}{med.strength ? ` • ${med.strength}` : ''}{med.dosage_form ? ` • ${med.dosage_form}` : ''}
-                  </p>
-
-                  <div className="medicine-card__more">
-                    <p className="medicine-card__indication">
-                      <span className="medicine-card__indication-label">
-                        <Stethoscope size={11} /> Indication
-                      </span>
-                      {med.indications || med.description || 'No indication recorded yet — add one via Edit.'}
-                    </p>
-                    {(med.category_name || med.sub_category_name || med.route || med.manufacturer) && (
-                      <div className="medicine-card__chips">
-                        {med.category_name && <span className="chip chip--primary">{med.category_name}</span>}
-                        {med.sub_category_name && <span className="chip chip--tint">{med.sub_category_name}</span>}
-                        {med.route && <span className="chip">{med.route}</span>}
-                        {med.manufacturer && <span className="chip">{med.manufacturer}</span>}
-                      </div>
-                    )}
+              const sellBlocked = st.key === 'inactive' || st.key === 'out' || st.key === 'expired';
+              return (
+                <article
+                  key={`medicine-${med.medicine_id}`}
+                  className="medicine-card stagger-item"
+                  role="button"
+                  tabIndex={0}
+                  aria-label={`View details for ${med.generic_name}${brandDiffers ? ` (${med.brand_name})` : ''}`}
+                  onClick={() => setLearnMedId(med.medicine_id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Enter' || e.key === ' ') {
+                      e.preventDefault();
+                      setLearnMedId(med.medicine_id);
+                    }
+                  }}
+                >
+                  {/* ── A. IMAGE (hero area, zooms on hover) ── */}
+                  <div className="medicine-card__media">
+                    <MedicineImage className="medicine-card__image" src={med.image_url} alt={med.generic_name} />
+                    <div className="medicine-card__scrim" aria-hidden="true" />
+                    <span className={`medicine-card__badge tone-${st.tone}`} title={st.label}>
+                      <span className="medicine-card__badge-icon" aria-hidden="true">{st.icon}</span>
+                      {st.label}
+                    </span>
+                    <span className="medicine-card__hover-hint" aria-hidden="true">
+                      <Eye size={13} /> View Details
+                    </span>
                   </div>
 
-                  <div className="medicine-card__footer">
-                    <div className="medicine-card__stats">
-                      <span>
-                        <Package size={13} /> {med.active_batches || 0} batch{(med.active_batches || 0) === 1 ? '' : 'es'}
-                      </span>
-                      <span className={parseInt(med.stock_on_hand) === 0 ? 'stat-danger' : (parseInt(med.stock_on_hand) < (parseInt(med.reorder_level) || 10) ? 'stat-warning' : '')}>
-                        ≈ {med.stock_on_hand || 0} stock
-                      </span>
+                  {/* ── B. IDENTITY ── */}
+                  <div className="medicine-card__body">
+                    <h3 className="medicine-card__title">{med.generic_name}</h3>
+                    {brandDiffers && <p className="medicine-card__brand">{med.brand_name}</p>}
+                    <p className="medicine-card__meta">
+                      {[med.strength, med.dosage_form, med.route].filter(Boolean).join(' • ') || '—'}
+                    </p>
+                    {(med.pronunciation_english || med.pronunciation_amharic) && (
+                      <p className="medicine-card__pron">
+                        {med.pronunciation_english && <PronunciationSpeaker text={med.pronunciation_english} language="en" label="En" />}
+                        {med.pronunciation_english && med.pronunciation_amharic && ' · '}
+                        {med.pronunciation_amharic && <PronunciationSpeaker text={med.pronunciation_amharic} language="am-ET" label="አማ" />}
+                      </p>
+                    )}
+
+                    {/* ── C/D. STOCK SUMMARY + EXPIRY ── */}
+                    <div className="medicine-card__facts">
+                      <div className="medicine-card__fact">
+                        <dt>Stock</dt>
+                        <dd>
+                          {stock} unit{stock === 1 ? '' : 's'}
+                        </dd>
+                      </div>
+                      <div className="medicine-card__fact">
+                        <dt>Batches</dt>
+                        <dd>{med.active_batches || 0}</dd>
+                      </div>
+                      <div className="medicine-card__fact">
+                        <dt>Expiry</dt>
+                        <dd>{med.nearest_expiry ? fmtExpiry(med.nearest_expiry) : '—'}</dd>
+                      </div>
                     </div>
+
+                    {/* ── E. ACTIONS ── */}
                     <div className="medicine-card__actions">
                       <button
-                        className="medicine-card__icon-btn is-info"
-                        title="View details"
-                        aria-label="View details"
+                        type="button"
+                        className="btn btn-primary btn-sm"
                         onClick={(e) => { e.stopPropagation(); setLearnMedId(med.medicine_id); }}
                       >
-                        <BookOpen size={14} />
+                        <BookOpen size={13} /> View Details
                       </button>
                       <button
-                        className="medicine-card__icon-btn"
-                        title="Edit drug"
-                        aria-label="Edit drug"
-                        onClick={(e) => { e.stopPropagation(); guard(() => handleOpenEditModal(med)); }}
+                        type="button"
+                        className="btn btn-secondary btn-sm"
+                        title={sellBlocked ? `Selling unavailable — ${st.label.toLowerCase()}` : 'Sell in POS'}
+                        disabled={sellBlocked}
+                        onClick={(e) => { e.stopPropagation(); guard(() => onOpenPOS && onOpenPOS()); }}
                       >
-                        <Edit size={14} />
+                        <ShoppingCart size={13} /> Sell
                       </button>
-                      <button
-                        className="medicine-card__icon-btn danger"
-                        title="Deactivate drug"
-                        aria-label="Deactivate drug"
-                        onClick={(e) => { e.stopPropagation(); handleRequestDelete(med); }}
-                      >
-                        <Trash2 size={14} />
-                      </button>
+                      <CardMenu
+                        items={[
+                          { key: 'view', label: 'View Details', icon: <Eye size={14} />, onClick: () => setLearnMedId(med.medicine_id) },
+                          { key: 'sell', label: 'Sell in POS', icon: <ShoppingCart size={14} />, onClick: () => guard(() => onOpenPOS && onOpenPOS(med)) },
+                          { key: 'edit', label: 'Edit Medicine', icon: <Edit size={14} />, onClick: () => guard(() => handleOpenEditModal(med)) },
+                          isAdmin && {
+                            key: 'status',
+                            label: med.status === 'ACTIVE' ? 'Deactivate' : 'Activate',
+                            icon: med.status === 'ACTIVE' ? <PowerOff size={14} /> : <Power size={14} />,
+                            onClick: () => handleQuickStatus(med),
+                          },
+                          isAdmin && {
+                            key: 'delete',
+                            label: 'Delete',
+                            icon: <Trash2 size={14} />,
+                            danger: true,
+                            onClick: () => handleRequestDelete(med),
+                          },
+                        ]}
+                      />
                     </div>
                   </div>
-                </div>
-              </article>
-            ))}
+                </article>
+              );
+            })}
           </div>
         ) : (
           <>
@@ -723,6 +882,8 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                         <span className={`badge ${parseInt(med.stock_on_hand) === 0 ? 'badge-danger' : parseInt(med.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
                           {med.stock_on_hand || 0}
                         </span>
+                        {(parseInt(med.expired_batches, 10) || 0) > 0 && <span className="badge badge-danger" title="Contains expired batches">× Expired</span>}
+                        {(parseInt(med.expiring_soon, 10) || 0) > 0 && <span className="badge badge-warning" title="Batches expiring within 90 days">⚠ Expiring</span>}
                       </td>
                       <td><span className="badge badge-neutral">{med.prescription_type}</span></td>
                       <td>
@@ -730,13 +891,10 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                       </td>
                       <td style={{ textAlign: 'right' }}>
                         <button className="btn btn-secondary btn-sm" onClick={() => setLearnMedId(med.medicine_id)}>
-                          <BookOpen size={13} /> Learn
+                          <BookOpen size={13} /> View
                         </button>
                         <button className="btn btn-secondary btn-sm" onClick={() => guard(() => handleOpenEditModal(med))}>
                           <Edit size={13} /> Edit
-                        </button>
-                        <button className="btn btn-danger-ghost btn-sm" onClick={() => handleRequestDelete(med)} title="Deactivate drug">
-                          <Trash2 size={13} /> Delete
                         </button>
                       </td>
                     </tr>
@@ -757,6 +915,12 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                   </div>
                   <div className="mobile-card-meta">
                     <span>{med.strength} · {med.dosage_form}</span>
+                    <span className={`badge ${parseInt(med.stock_on_hand) === 0 ? 'badge-danger' : parseInt(med.stock_on_hand) < 10 ? 'badge-warning' : 'badge-secondary'}`}>
+                      {med.stock_on_hand || 0}
+                    </span>
+                  </div>
+                  <div className="mobile-card-meta">
+                    <span className="muted-line">{med.nearest_expiry ? `Exp: ${fmtExpiry(med.nearest_expiry)}` : 'No active expiry'}</span>
                     <span className={`badge ${med.status === 'ACTIVE' ? 'badge-success' : 'badge-danger'}`}>{med.status}</span>
                   </div>
                   <div className="mobile-card-meta">
@@ -765,13 +929,10 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                   </div>
                   <div className="mobile-card-actions">
                     <button className="btn btn-secondary btn-sm" onClick={() => setLearnMedId(med.medicine_id)}>
-                      <BookOpen size={13} /> Learn
+                      <BookOpen size={13} /> View
                     </button>
                     <button className="btn btn-secondary btn-sm" onClick={() => guard(() => handleOpenEditModal(med))}>
-                      <Edit size={13} /> Edit Drug
-                    </button>
-                    <button className="btn btn-danger-ghost btn-sm" onClick={() => handleRequestDelete(med)}>
-                      <Trash2 size={13} /> Delete
+                      <Edit size={13} /> Edit
                     </button>
                   </div>
                 </div>
@@ -812,44 +973,68 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
 
 
 
-      {/* ── DEACTIVATE CONFIRMATION ── */}
-      <ConfirmDialog
-        open={Boolean(deleteTarget)}
-        danger
-        title="Deactivate this drug?"
-        message={`"${deleteTarget?.generic_name || 'This drug'}" will be marked INACTIVE and removed from POS and new transactions. Historical records are preserved.`}
-        confirmLabel="Deactivate"
+      {/* ── PERMANENT-DELETE CONFIRMATION (type the name to confirm) ── */}
+      <MedicineDeleteModal
+        medicine={deleteTarget}
         loading={deleting}
-        onConfirm={confirmDeleteMedicine}
+        onConfirm={confirmPermanentDelete}
         onCancel={() => { if (!deleting) setDeleteTarget(null); }}
       />
+
+      {/* ── MEDICINE DETAILS VIEW (single instance): full action set ── */}
+      {learnMedId && (
+        <MedicineLearnModal
+          medicineId={learnMedId}
+          onClose={() => setLearnMedId(null)}
+          onEdit={(med) => { setLearnMedId(null); handleOpenEditModal(med); }}
+          onDeleteRequest={(med) => { setLearnMedId(null); handleRequestDelete(med); }}
+          onStatusChanged={() => fetchMedicines()}
+          onSell={(med) => guard(() => onOpenPOS && onOpenPOS(med))}
+          onResupply={() => { setLearnMedId(null); onNavigateImport && onNavigateImport(); }}
+        />
+      )}
 
       {/* ── ADD / EDIT MODAL ── */}
       {isModalOpen && (
         <div className="modal-overlay">
           <div className="modal-card" style={{ maxWidth: '820px' }}>
             <div className="modal-header">
-              <h2>{isEditMode ? 'Edit Drug' : 'Register New Drug'}</h2>
+              <h2>{isEditMode ? 'Edit Medicine' : 'Register New Medicine'}</h2>
               <button type="button" className="modal-close-btn" onClick={() => !savingMedicine && setIsModalOpen(false)} disabled={savingMedicine} aria-label="Close">×</button>
             </div>
 
             <form onSubmit={handleSubmitForm}>
               {/* SECTION A – Basic Info */}
               <div className="drug-section">
-                <h3 className="drug-section-title">Section A — Basic Drug Information</h3>
+                <h3 className="drug-section-title">Section A — Medicine Identification</h3>
                 <div className="form-grid">
                   <div className="form-group">
-                    <label>Generic Name *</label>
+                    <label>Generic Name (Active Ingredient) *</label>
                     <input required type="text" className="form-control" value={formData.generic_name}
                       onChange={e => setFormData({ ...formData, generic_name: e.target.value })} placeholder="e.g. Paracetamol" />
                   </div>
                   <div className="form-group">
-                    <label>Brand Name</label>
-                    <input type="text" className="form-control" value={formData.brand_name}
+                    <label>Brand Name *</label>
+                    <input required type="text" className="form-control" value={formData.brand_name}
                       onChange={e => setFormData({ ...formData, brand_name: e.target.value })} placeholder="e.g. Panadol" />
+                                    </div>
+                  <div className="form-group form-group--wide">
+                    <label>Pronunciation</label>
+                    <div className="pron-grid">
+                      <div>
+                        <input type="text" className="form-control" aria-label="English pronunciation" value={formData.pronunciation_english}
+                          onChange={e => setFormData({ ...formData, pronunciation_english: e.target.value })} placeholder="Example: Nor-ETH-is-te-rone" />
+                        <span className="form-hint">Optional. Write the pronunciation the way you want the system to read it.</span>
+                      </div>
+                      <div>
+                        <input type="text" className="form-control" aria-label="Amharic pronunciation" value={formData.pronunciation_amharic}
+                          onChange={e => setFormData({ ...formData, pronunciation_amharic: e.target.value })} placeholder="Example: ኖሬቲስቴሮን" />
+                        <span className="form-hint">Optional. Enter the Amharic pronunciation you want the system to read.</span>
+                      </div>
+                    </div>
                   </div>
                   <div className="form-group">
-                    <label>Strength *</label>
+                    <label>Strength / Concentration *</label>
                     <input required type="text" className="form-control" placeholder="e.g. 500 mg" value={formData.strength}
                       onChange={e => setFormData({ ...formData, strength: e.target.value })} />
                   </div>
@@ -876,12 +1061,12 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                     </select>
                   </div>
                   <div className="form-group">
-                    <label>Manufacturer</label>
-                    <input type="text" className="form-control" value={formData.manufacturer}
+                    <label>Manufacturer / Brand Owner *</label>
+                    <input required type="text" className="form-control" value={formData.manufacturer}
                       onChange={e => setFormData({ ...formData, manufacturer: e.target.value })} placeholder="e.g. GSK" />
                   </div>
                   <div className="form-group">
-                    <label>Country</label>
+                    <label>Country of Manufacture</label>
                     <input type="text" className="form-control" value={formData.country}
                       onChange={e => setFormData({ ...formData, country: e.target.value })} placeholder="e.g. Ethiopia" />
                   </div>
@@ -907,7 +1092,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                     </select>
                   </div>
                   <div className="form-group">
-                    <label>Category</label>
+                    <label>Drug Class / Category *</label>
                     <div className="category-picker" role="listbox" aria-label="Medicine category">
                       <button type="button" className={`category-tile category-tile--empty ${!formData.category_id ? 'selected' : ''}`}
                         onClick={() => setFormData({ ...formData, category_id: '', sub_category_id: '' })}>
@@ -925,7 +1110,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                     </div>
                   </div>
                   <div className="form-group">
-                    <label>Subcategory</label>
+                    <label>Subcategory (Optional)</label>
                     <select className="form-control" value={formData.sub_category_id}
                       onChange={e => setFormData({ ...formData, sub_category_id: e.target.value })}
                       disabled={!formData.category_id}>
@@ -943,10 +1128,10 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                     <h3 className="drug-section-title" style={{ margin: 0, borderBottom: 'none', paddingBottom: 0 }}>
                       Section B — Clinical Information
                     </h3>
-                    <span className="form-hint">AI-assisted information — verify before saving/clinical use.</span>
+                    <span className="form-hint">AI suggestions are pre-filled for review — nothing is saved until you confirm.</span>
                   </div>
                   <button type="button" onClick={handleAiAutofill} disabled={aiLoading} className="btn btn-secondary btn-sm">
-                    <Sparkles size={14} /> {aiLoading ? 'Generating…' : 'Generate with AI'}
+                    <Sparkles size={14} /> {aiLoading ? 'Generating…' : 'AI Autofill'}
                   </button>
                 </div>
                 {aiNotice && (
@@ -1087,8 +1272,8 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                 <button type="submit" className="btn btn-primary" disabled={savingMedicine} aria-busy={savingMedicine}>
                   {savingMedicine ? <Loader2 size={16} className="spin" /> : <Check size={16} />}
                   {savingMedicine
-                    ? (isEditMode ? 'Saving Changes…' : 'Registering Drug…')
-                    : (isEditMode ? 'Save Changes' : (addInitialStock ? 'Register Drug & Stock' : 'Register Drug'))}
+                    ? (isEditMode ? 'Saving Changes…' : 'Registering Medicine…')
+                    : (isEditMode ? 'Save Changes' : (addInitialStock ? 'Review & Save Medicine' : 'Save Medicine'))}
                 </button>
               </div>
             </form>
@@ -1096,8 +1281,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
         </div>
       )}
 
-      {/* ── MEDICINE LEARNING MODAL (Learn More) ── */}
-      {learnMedId && <MedicineLearnModal medicineId={learnMedId} onClose={() => setLearnMedId(null)} />}
+      {/* ── MEDICINE DETAILS VIEW is rendered once, above (full action set) ── */}
     </div>
   );
 };

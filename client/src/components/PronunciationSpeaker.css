@@ -1,0 +1,65 @@
+/* ── PronunciationSpeaker: accessible, touch-friendly TTS button ── */
+.pron-speaker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
+  min-height: 48px;            /* WCAG tap-target minimum on mobile */
+  min-width: 48px;
+  padding: 0.4rem 0.7rem;
+  border-radius: var(--radius-sm, 8px);
+  border: 1px solid var(--border-strong, #d4d9e2);
+  background: var(--surface, #ffffff);
+  color: var(--text-main, #16181d);
+  font-size: 0.82rem;
+  font-weight: 600;
+  cursor: pointer;
+  vertical-align: middle;
+  transition: var(--transition-fast, 150ms ease);
+}
+.pron-speaker:focus-visible {
+  outline: 2px solid var(--info, #1d4ed8);
+  outline-offset: 2px;
+}
+.pron-speaker:hover {
+  background: var(--surface-hover, #eef0f4);
+}
+.pron-speaker__icon {
+  display: inline-flex;
+  align-items: center;
+  font-size: 1.1em;
+  line-height: 1;
+}
+.pron-speaker__label { white-space: nowrap; }
+.pron-speaker__pulse {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--info, #1d4ed8);
+  display: inline-block;
+  animation: pron-pulse 1.4s ease-in-out infinite;
+}
+@keyframes pron-pulse {
+  0%, 100% { opacity: 0.55; transform: scale(0.9); }
+  50% { opacity: 1; transform: scale(1.2); }
+}
+/* Speaking state — blue accent for clear feedback */
+.pron-speaker--speaking {
+  background: var(--info-bg, #eff4ff);
+  border-color: var(--info, #1d4ed8);
+  color: var(--info, #1d4ed8);
+}
+.pron-speaker__status {
+  margin-left: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+.pron-speaker__note {
+  margin-left: 0.35rem;
+  font-size: 0.72rem;
+  font-weight: 500;
+  color: var(--text-muted, #64748b);
+}
+.pron-speaker--unused { opacity: 0.55; cursor: not-allowed; }
+@media (max-width: 560px) {
+  .pron-speaker { min-height: 48px; padding: 0.5rem 0.8rem; }
+}

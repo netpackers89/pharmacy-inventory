@@ -2,6 +2,37 @@ const express = require('express');
 const cors = require('cors');
 require('dotenv').config();
 
+// ---------------------------------------------------------------------------
+// Security headers — thin re-implementation of helmet-style defaults so the
+// project keeps a single express dependency. Every header below is a standard
+// OWASP-recommended protection for a browser-facing pharmacy application.
+// ---------------------------------------------------------------------------
+const DEFAULT_SECURITY_HEADERS = {
+  'X-DNS-Prefetch-Control': 'on',
+  'X-Frame-Options': 'SAMEORIGIN',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'strict-origin-when-cross-origin',
+  'Permissions-Policy': 'camera=(), microphone=(), geolocation=(self), payment=()',
+  'X-XSS-Protection': '0', // modern browsers ignore this header; CSP is the fix
+};
+
+/** Convert a Node headers object into Express res.set(...) calls. */
+function applySecurityHeaders(req, res, next) {
+  const headers = {
+    ...DEFAULT_SECURITY_HEADERS,
+    'Content-Security-Policy': process.env.NODE_ENV === 'production'
+      ? "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https:; font-src 'self'; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self'"
+      : "default-src 'self' http://localhost:*; script-src 'self' 'unsafe-inline' http://localhost:*; style-src 'self' 'unsafe-inline' http://localhost:*; img-src 'self' data: https: http:; font-src 'self' http:; frame-ancestors 'self'; object-src 'none'; base-uri 'self'; form-action 'self' http://localhost:*",
+  };
+
+  // Allow the health endpoint (no auth) to be health-checked by uptime monitors.
+  // Everything else keeps a strict same-origin policy.
+  for (const [key, value] of Object.entries(headers)) {
+    res.set(key, value);
+  }
+  next();
+}
+
 const { seedData } = require('./seed');
 const db = require('./config/db');
 
@@ -21,7 +52,6 @@ const ddiRoutes = require('./routes/ddiRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
-// Build CORS options from env; allow frontend URL and onrender subdomains
 const FRONTEND_URL = (process.env.FRONTEND_URL || '').trim();
 const allowedOrigins = new Set();
 if (FRONTEND_URL) {
@@ -45,14 +75,35 @@ const corsOptions = {
     }
     return callback(new Error('Not allowed by CORS'));
   },
-  credentials: true,
+    credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
 };
 
-// Middleware
+// Security headers — set on every response (no external dependency).
+app.use((req, res, next) => {
+  res.setHeader('X-Content-Type-Options', 'nosniff');
+  res.setHeader('X-Frame-Options', 'DENY');
+  res.setHeader('X-XSS-Protection', '1; mode=block');
+  res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.setHeader('Content-Security-Policy',
+    "default-src 'self'; " +
+    "script-src 'self'; " +
+    "style-src 'self' 'unsafe-inline'; " +
+    "img-src 'self' data: https:; " +
+    "connect-src 'self'; " +
+    "frame-ancestors 'none'; " +
+    "base-uri 'self'"
+  );
+  res.setHeader('Permissions-Policy',
+    'camera=(), microphone=(), geolocation=(), payment=()'
+  );
+  next();
+});
+
+// Middleware — enforce request size limits to prevent oversized payloads.
 app.use(cors(corsOptions));
-app.use(express.json());
-app.use(express.urlencoded({ extended: true }));
+app.use(express.json({ limit: '2mb' }));
+app.use(express.urlencoded({ extended: true, limit: '2mb' }));
 
 // Logging middleware
 app.use((req, res, next) => {
@@ -125,6 +176,8 @@ app.use((err, req, res, next) => {
 
 async function startServer() {
   await db.initializeDB();
+  const { startAuditArchiveScheduler } = require('./services/auditArchiveService');
+  startAuditArchiveScheduler();
   await seedData();
 
   // Seed the local DDI fallback dataset (idempotent).

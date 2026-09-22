@@ -51,6 +51,10 @@ export const medicinesAPI = {
   getById: (id) => api.get(`/medicines/${id}`),
   create: (data) => api.post('/medicines', data),
   update: (id, data) => api.put(`/medicines/${id}`, data),
+  // Activate / deactivate (keeps the record; never deletes it). ADMIN-only server-side.
+  changeStatus: (id, status) => api.patch(`/medicines/${id}/status`, { status }),
+  // PERMANENT delete — admin only. Backend runs a safe SQL transaction and
+  // blocks medicines that carry historical pharmacy records.
   delete: (id) => api.delete(`/medicines/${id}`),
   import: (medicines) => api.post('/medicines/import', { medicines }),
   previewImport: (rows, mode = 'batch') => api.post('/medicines/import/preview', { rows, mode }),
@@ -118,6 +122,7 @@ export const settingsAPI = {
 export const reportsAPI = {
   getOverview: () => api.get('/reports/overview'),
   getSales: (params) => api.get('/reports/sales', { params }),
+  getSalesSeries: (range) => api.get('/reports/sales-series', { params: { range } }),
   getInventory: () => api.get('/reports/inventory'),
   getProfit: (params) => api.get('/reports/profit', { params }),
   getExpiry: (window) => api.get('/reports/expiry', { params: { window } }),

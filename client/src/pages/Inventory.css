@@ -15,6 +15,18 @@
 
 .inv-search { max-width: 320px; flex: 1; min-width: 200px; }
 
+/* ── Status filter (All / Active / Inactive) ── */
+.inv-status-filter {
+  display: flex; gap: 0.35rem; padding: 0 1rem 0.6rem; flex-wrap: wrap;
+}
+.inv-status-btn {
+  border: 1px solid var(--border); background: var(--surface);
+  color: var(--text-secondary); font-size: 0.78rem; font-weight: 600;
+  padding: 0.35rem 0.85rem; border-radius: 999px; cursor: pointer;
+}
+.inv-status-btn:hover { background: var(--surface-alt); }
+.inv-status-btn.active { background: var(--primary); color: #fff; border-color: var(--primary); }
+
 /* ── Sort controls ── */
 .inv-sort-row {
   display: flex;
@@ -136,6 +148,88 @@
 }
 .bincard-title svg { color: var(--primary); }
 .bincard-title strong { color: var(--text-main); font-size: 1.1rem; }
+
+/* ── Medicine cell with thumbnail (Stock list: table + mobile cards) ── */
+.stock-med-cell {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  min-width: 0;
+}
+.stock-med-thumb {
+  width: 40px;
+  height: 40px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+.stock-med-thumb .medicine-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.stock-med-text { min-width: 0; display: flex; flex-direction: column; }
+.stock-med-text strong {
+  font-size: 0.88rem;
+  color: var(--text-main);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+@media (max-width: 640px) {
+  .stock-med-thumb { width: 34px; height: 34px; border-radius: 8px; }
+  .stock-med-text strong { font-size: 0.8rem; white-space: normal; }
+}
+
+/* ── Bin card medicine identity header: image + full identification ── */
+.bincard-identity {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-bottom: 1.1rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  flex-wrap: wrap;
+}
+.bincard-identity__img {
+  width: 72px;
+  height: 72px;
+  flex-shrink: 0;
+  border-radius: 14px;
+  overflow: hidden;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+.bincard-identity__img .medicine-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+.bincard-identity__info { min-width: 0; flex: 1; }
+.bincard-identity__brand {
+  display: block;
+  font-size: 0.82rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+}
+.bincard-identity__brand strong { color: var(--text-main); }
+.bincard-identity__meta {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem;
+  margin-top: 0.45rem;
+  align-items: center;
+}
+@media (max-width: 640px) {
+  .bincard-identity { gap: 0.7rem; padding: 0.8rem; }
+  .bincard-identity__img { width: 56px; height: 56px; border-radius: 12px; }
+}
 .bincard-med-name { font-weight: 700; color: var(--text-main); font-size: 1.05rem; }
 
 .bincard-stats {

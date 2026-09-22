@@ -1,4 +1,8 @@
 const db = require('../config/db');
+const crypto = require('crypto');
+const fs = require('fs/promises');
+const path = require('path');
+const { getArchiveOverview, ARCHIVE_DIR } = require('../services/auditArchiveService');
 
 /*
  * Shared filter builder — the list endpoint and the CSV export use EXACTLY
@@ -188,5 +192,37 @@ exports.getAuditMeta = async (_req, res) => {
   } catch (err) {
     console.error('[AUDIT_META]', err.message);
     res.json({ success: false, actions: [], modules: [] });
+  }
+};
+
+// Archive metadata and preview are ADMIN-only at the route layer. They expose
+// no file paths and never trigger deletion from a web request.
+exports.getArchiveOverview = async (_req, res) => {
+  try { return res.json({ success: true, ...(await getArchiveOverview()) }); }
+  catch (err) {
+    console.error('[AUDIT_ARCHIVE_OVERVIEW]', err.message);
+    return res.status(500).json({ success: false, error: 'Unable to load audit archive status' });
+  }
+};
+
+exports.downloadArchive = async (req, res) => {
+  try {
+    const job = await db.query(
+      "SELECT archive_job_id, file_name, file_hash, status FROM audit_archive_jobs WHERE archive_job_id=$1 AND status IN ('VERIFIED','DELETED')",
+      [req.params.id]
+    );
+    const record = job.rows[0];
+    if (!record?.file_name || path.basename(record.file_name) !== record.file_name) return res.status(404).json({ error: 'Archive not available' });
+    const filePath = path.join(ARCHIVE_DIR, record.file_name);
+    const bytes = await fs.readFile(filePath);
+    const hash = crypto.createHash('sha256').update(bytes).digest('hex');
+    if (hash !== record.file_hash) return res.status(409).json({ error: 'Archive verification failed; download is disabled' });
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="${record.file_name}"`);
+    return res.send(bytes);
+  } catch (err) {
+    if (err.code === 'ENOENT') return res.status(404).json({ error: 'Archive file is unavailable' });
+    console.error('[AUDIT_ARCHIVE_DOWNLOAD]', err.message);
+    return res.status(500).json({ error: 'Unable to download archive' });
   }
 };

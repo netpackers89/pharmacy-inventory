@@ -56,9 +56,48 @@ const initializeDB = async () => {
     `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS description TEXT`,
     `ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
     `ALTER TABLE suppliers ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) NOT NULL DEFAULT CURRENT_TIMESTAMP`,
-    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS image_url TEXT`,
+        `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS image_url TEXT`,
     `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS mass NUMERIC(12, 3)`,
     `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS mass_unit VARCHAR(10)`,
+    // Optional pronunciation guides for the browser Text-to-Speech feature.
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS pronunciation_english TEXT`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS pronunciation_amharic TEXT`,
+    /*
+     * PACKAGING HIERARCHY (medicine master data).
+     * Stock is ALWAYS counted in one BASE UNIT (single dose). A medicine may
+     * define an exact, configurable conversion chain:
+     *   1 base unit → 1 strip (units_per_strip)
+     *   1 strip → 1 inner box (strips_per_inner_box)
+     *   1 inner box → 1 outer box (inner_boxes_per_outer_box)
+     * Levels that are not configured for a medicine stay NULL and are simply
+     * not offered as a selling/dispensing unit. Factors are exact integers —
+     * ranges such as "500~1000" are never valid input.
+     */
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS base_unit VARCHAR(20) NOT NULL DEFAULT 'UNIT'`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS units_per_strip INTEGER`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS strips_per_inner_box INTEGER`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS inner_boxes_per_outer_box INTEGER`,
+    // May the pharmacy open a strip/box and sell individual single doses?
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS allow_open_package BOOLEAN NOT NULL DEFAULT TRUE`,
+    // Commercial price per dispensing unit (NULL = derive from the batch price).
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS sell_price_unit NUMERIC(12, 2)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS sell_price_strip NUMERIC(12, 2)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS sell_price_inner_box NUMERIC(12, 2)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS sell_price_outer_box NUMERIC(12, 2)`,
+    /*
+     * DISPENSING TEMPLATE (medicine-specific defaults — SUGGESTIONS ONLY).
+     * Pre-fills the POS regimen panel; the pharmacist can always override
+     * dose, frequency, duration, route and the final quantity. Prescription
+     * type never implies a dose.
+     */
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS dispense_dose NUMERIC(6, 2)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS dispense_frequency VARCHAR(10)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS dispense_frequency_interval NUMERIC(6, 2)`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS dispense_duration_days INTEGER`,
+    `ALTER TABLE medicines ADD COLUMN IF NOT EXISTS dispense_route VARCHAR(20)`,
+    // Auditable dispensing on each sold line: WHICH unit and HOW MANY of it.
+    `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS package_qty INTEGER`,
+    `ALTER TABLE sale_items ADD COLUMN IF NOT EXISTS frequency_interval NUMERIC(6, 2)`,
   ];
   // System-level security events (failed logins of unknown accounts,
   // lockouts) have NO user row — audit columns must be nullable.
@@ -128,6 +167,23 @@ const initializeDB = async () => {
           max_level INTEGER DEFAULT 500,
           status VARCHAR(255) CHECK (status IN('ACTIVE', 'INACTIVE')) NOT NULL DEFAULT 'ACTIVE',
           image_url TEXT,
+          pronunciation_english TEXT,
+          pronunciation_amharic TEXT,
+          -- Packaging hierarchy + dispensing template (see safeColumns above)
+          base_unit VARCHAR(20) NOT NULL DEFAULT 'UNIT',
+          units_per_strip INTEGER,
+          strips_per_inner_box INTEGER,
+          inner_boxes_per_outer_box INTEGER,
+          allow_open_package BOOLEAN NOT NULL DEFAULT TRUE,
+          sell_price_unit NUMERIC(12, 2),
+          sell_price_strip NUMERIC(12, 2),
+          sell_price_inner_box NUMERIC(12, 2),
+          sell_price_outer_box NUMERIC(12, 2),
+          dispense_dose NUMERIC(6, 2),
+          dispense_frequency VARCHAR(10),
+          dispense_frequency_interval NUMERIC(6, 2),
+          dispense_duration_days INTEGER,
+          dispense_route VARCHAR(20),
           created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
           updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
       );
@@ -210,7 +266,17 @@ const initializeDB = async () => {
           quantity INTEGER NOT NULL,
           sell_price DECIMAL(12, 2) NOT NULL,
           discount DECIMAL(12, 2) NOT NULL DEFAULT 0,
-          total_price DECIMAL(14, 2) NOT NULL
+          total_price DECIMAL(14, 2) NOT NULL,
+          -- Auditable dispensing: which unit was sold and how many of it
+          package_qty INTEGER,
+          dose_per_admin NUMERIC(6, 2),
+          frequency_code VARCHAR(10),
+          frequency_interval NUMERIC(6, 2),
+          duration_days INTEGER,
+          route_of_admin VARCHAR(20),
+          required_qty INTEGER,
+          dispensing_unit VARCHAR(50),
+          counseling_note TEXT
       );
 
       CREATE TABLE IF NOT EXISTS stock_movements (
@@ -250,6 +316,25 @@ const initializeDB = async () => {
           session_id BIGINT,
           status VARCHAR(10) DEFAULT 'SUCCESS',
           created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+
+      -- Metadata only: archive files are deliberately kept outside PostgreSQL.
+      CREATE TABLE IF NOT EXISTS audit_archive_jobs (
+          archive_job_id bigserial PRIMARY KEY,
+          period_key VARCHAR(32) NOT NULL UNIQUE,
+          period_start TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL,
+          period_end TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL,
+          record_count INTEGER NOT NULL DEFAULT 0,
+          file_name VARCHAR(255),
+          file_hash VARCHAR(128),
+          created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          verified_at TIMESTAMP(0) WITHOUT TIME ZONE,
+          deleted_at TIMESTAMP(0) WITHOUT TIME ZONE,
+          status VARCHAR(16) NOT NULL DEFAULT 'GENERATING'
+            CHECK (status IN ('GENERATING', 'GENERATED', 'VERIFIED', 'DELETED', 'FAILED')),
+          created_by VARCHAR(50) NOT NULL DEFAULT 'SYSTEM',
+          notification_status VARCHAR(32) NOT NULL DEFAULT 'PENDING',
+          failure_reason TEXT
       );
 
       CREATE TABLE IF NOT EXISTS user_sessions (
@@ -328,6 +413,7 @@ const initializeDB = async () => {
       ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS user_agent TEXT;
       ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS session_id BIGINT;
       ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS status VARCHAR(10) DEFAULT 'SUCCESS';
+      ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS archive_job_id BIGINT REFERENCES audit_archive_jobs(archive_job_id);
       ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS medicine_id BIGINT REFERENCES medicines(medicine_id);
       ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reference_type VARCHAR(50);
       ALTER TABLE stock_movements ADD COLUMN IF NOT EXISTS reason VARCHAR(100);
@@ -357,6 +443,7 @@ const initializeDB = async () => {
       CREATE INDEX IF NOT EXISTS audit_logs_user_id_index ON audit_logs(user_id);
       CREATE INDEX IF NOT EXISTS audit_logs_module_index ON audit_logs(module);
       CREATE INDEX IF NOT EXISTS audit_logs_created_at_index ON audit_logs(created_at);
+      CREATE INDEX IF NOT EXISTS audit_logs_archive_job_id_index ON audit_logs(archive_job_id) WHERE archive_job_id IS NOT NULL;
       CREATE INDEX IF NOT EXISTS physical_counts_user_id_index ON physical_counts(user_id);
       CREATE INDEX IF NOT EXISTS physical_count_items_count_id_index ON physical_count_items(physical_count_id);
       CREATE INDEX IF NOT EXISTS user_sessions_user_id_index ON user_sessions(user_id);
@@ -373,6 +460,49 @@ const initializeDB = async () => {
         `);
     } catch (alterErr) {
         console.warn('Alter table skipped or failed:', alterErr.message);
+    }
+
+    /*
+     * MEDICINE → BATCH → INVENTORY cascading.
+     *
+     * A genuinely deleted medicine must remove its batches and the stock
+     * derived from those batches together (no orphan inventory). Historical
+     * business records — completed sales, sale_items, resupply history,
+     * stock movements, physical counts and audit logs — are DELIBERATELY left
+     * WITHOUT a cascade: any reference to a batch of this medicine blocks the
+     * DELETE at the database level, so the application-layer dependency check
+     * in medicineController.hardDeleteMedicine can detect it and refuse
+     * destruction of a medicine with pharmacy history.
+     */
+    try {
+        const cascadeSql = `
+            DO $$
+            BEGIN
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'batches_medicine_id_fkey'
+                      AND conrelid = 'batches'::regclass
+                ) THEN
+                    ALTER TABLE batches DROP CONSTRAINT batches_medicine_id_fkey;
+                END IF;
+                IF EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conname = 'batches_medicine_id_fkey1'
+                      AND conrelid = 'batches'::regclass
+                ) THEN
+                    ALTER TABLE batches DROP CONSTRAINT batches_medicine_id_fkey1;
+                END IF;
+                ALTER TABLE batches
+                    ADD CONSTRAINT batches_medicine_id_fkey
+                    FOREIGN KEY (medicine_id) REFERENCES medicines(medicine_id) ON DELETE CASCADE;
+            END $$;
+        `;
+        await client.query(cascadeSql);
+    } catch (fkErr) {
+        // Best-effort migration: drops/recreates can fail if the constraint was
+        // already replaced, on read-only replicas, or is in use. The application
+        // layer performs the same safe cascade inside its own transaction.
+        console.warn('FK cascade migration skipped:', fkErr.message);
     }
 
     // Existing imports or restored databases can leave serial sequences

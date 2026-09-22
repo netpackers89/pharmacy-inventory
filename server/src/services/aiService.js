@@ -134,9 +134,11 @@ async function autofillMedicineDetails(name, dosageForm = '') {
   "pregnancy_lactation": "Pregnancy and lactation safety",
   "interactions": "Key drug interactions",
   "side_effects": "Common side effects",
-  "storage_condition_patient": "Storage instructions for patients"
+  "storage_condition_patient": "Storage instructions for patients",
+  "pronunciation_english": "Phonetic pronunciation of the generic name using English syllables (e.g. par-uh-SEE-tuh-mol), or an EMPTY STRING if not confidently known",
+  "pronunciation_amharic": "Phonetic pronunciation of the generic name in Ge'ez/Ethiopic script (አማርኛ), or an EMPTY STRING if not confidently known"
 }
-Do not invent dosages. Do not add extra keys.`;
+Do not invent dosages. Never guess a pronunciation — if you are not confident, return an empty string. Do not add extra keys.`;
 
   try {
     const parsed = await parseJsonResponse(prompt);

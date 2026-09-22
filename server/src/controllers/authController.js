@@ -135,7 +135,7 @@ exports.login = async (req, res) => {
       ipAddress   : ip,
       userAgent   : req.userAgent,
     });
-    return res.status(403).json({ error: 'Account is inactive. Contact an administrator.' });
+    return res.status(403).json({ error: 'Account inactive. Your account has been deactivated. Please contact the administrator.' });
   }
 
   // Successful credentials → clear the failure counter for this username+IP.

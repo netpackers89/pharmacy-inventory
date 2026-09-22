@@ -63,6 +63,18 @@
   margin-top: 2px;
 }
 
+/* Pronunciation guide (English + Amharic) row in the medicine form */
+.pron-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 0.55rem;
+  margin-top: 0.35rem;
+}
+@media (max-width: 560px) {
+  .pron-grid { grid-template-columns: 1fr; }
+}
+.form-group--wide { grid-column: 1 / -1; }
+
 /* Import dropzone */
 .import-dropzone {
   padding: 2.5rem 1.5rem;
@@ -259,328 +271,487 @@
   color: #fff;
 }
 
-.drugs-filters {
-  display: flex;
-  gap: 0.5rem;
-  flex-wrap: wrap;
+/* ── Status Pills (minimal, always visible) ── */
+.drugs-status-pills {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 10px;
+  background: var(--surface-alt, #f1f5f9);
+  border: 1px solid var(--border, #e2e8f0);
   margin-bottom: 1rem;
 }
 
-.dosage-select { max-width: 180px; }
+.status-pill {
+  border: 0;
+  background: transparent;
+  border-radius: 7px;
+  padding: 0.3rem 0.8rem;
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-muted, #64748b);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.status-pill:hover {
+  color: var(--text-main, #1e293b);
+  background: color-mix(in srgb, var(--border, #e2e8f0) 30%, transparent);
+}
+
+.status-pill.active {
+  background: var(--primary, #2563eb);
+  color: #fff;
+}
+
+/* ── Extra Filters (compact popover) ── */
+.drugs-extra-filters {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-bottom: 1rem;
+  position: relative;
+}
+
+.drugs-filter-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  border: 1px solid var(--border, #e2e8f0);
+  background: var(--surface, #fff);
+  border-radius: 8px;
+  padding: 0.35rem 0.7rem;
+  font-size: 0.76rem;
+  font-weight: 600;
+  color: var(--text-secondary, #475569);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.drugs-filter-btn:hover {
+  background: var(--surface-alt, #f1f5f9);
+  border-color: var(--primary, #2563eb);
+  color: var(--primary, #2563eb);
+}
+
+.drugs-filters-popover {
+  position: absolute;
+  top: calc(100% + 0.4rem);
+  left: 0;
+  z-index: 100;
+  background: var(--surface, #fff);
+  border: 1px solid var(--border, #e2e8f0);
+  border-radius: 12px;
+  box-shadow: 0 12px 30px rgba(15, 23, 42, 0.16);
+  padding: 0.7rem;
+  min-width: 220px;
+  max-width: calc(100vw - 2rem);
+}
+
+.drugs-filters-grid {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.form-control--sm {
+  max-width: 100%;
+  font-size: 0.8rem;
+  padding: 0.35rem 0.6rem;
+}
+
+.drugs-filters-popover__foot {
+  margin-top: 0.4rem;
+  border-top: 1px solid var(--border, #e2e8f0);
+  padding-top: 0.4rem;
+}
+
+.drugs-filters-overlay {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 90;
+}
 
 @media (max-width: 600px) {
-  .drugs-filters > .form-control,
-  .dosage-select { max-width: none !important; flex: 1 1 145px; }
+  .drugs-status-pills { margin-bottom: 0.75rem; }
+  .status-pill { font-size: 0.74rem; padding: 0.25rem 0.6rem; }
+  .drugs-extra-filters { width: 100%; justify-content: stretch; }
+  .drugs-filter-btn { flex: 1; justify-content: center; }
 }
 
 .medicine-card-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(248px, 1fr));
   gap: 1.15rem;
-  align-items: start;
+  align-items: stretch;
 }
 
-/*
- * Hover-expanding medicine card (GoodReads-style):
- * a fixed-height media area with a white panel anchored to the bottom.
- * On hover/focus the panel grows upward (height animation — no layout
- * reflow of siblings since the card keeps a fixed height) revealing the
- * indication, the card's main learning content.
- */
+/* ===================================================
+   MEDICINE PRODUCT CARD
+   Image-led product card: image hero with a status badge
+   on top, information underneath, actions in the footer.
+   =================================================== */
 .medicine-card {
-  --curve: 1.35rem;
-  --panel-h: 110px;
-  --panel-h-open: 206px;
   position: relative;
-  height: 344px;
-  border-radius: 1.4rem;
+  display: flex;
+  flex-direction: column;
+  border-radius: 1.1rem;
   overflow: hidden;
-  background: var(--surface-alt, #eef4ff);
+  background: var(--surface);
   border: 1px solid var(--border);
-  box-shadow: 0 2px 10px rgba(15, 23, 42, 0.05);
-  transition: box-shadow 0.3s ease, transform 0.3s ease;
+  box-shadow: var(--shadow-sm);
   cursor: pointer;
+  transition: box-shadow var(--transition-normal), transform var(--transition-normal), border-color var(--transition-normal);
 }
 .medicine-card:hover,
 .medicine-card:focus-within {
-  box-shadow: 0 18px 40px -12px rgba(15, 23, 42, 0.22);
   transform: translateY(-3px);
+  border-color: var(--border-strong);
+  box-shadow: var(--shadow-lg);
 }
 .medicine-card--skeleton { pointer-events: none; }
+.medicine-card--skeleton:hover { transform: none; box-shadow: var(--shadow-sm); }
 
-/* ── Media area (whole card backdrop) ── */
+/* ── Image hero (zooms slightly on hover) ── */
 .medicine-card__media {
-  position: absolute;
-  inset: 0;
-  background: var(--surface-alt, #eef4ff);
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  flex: 0 0 auto;
+  overflow: hidden;
+  background: var(--surface-alt);
 }
 .medicine-card__media .medicine-card__image {
-  height: 100%;
   width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transition: transform var(--transition-slow) ease;
 }
+.medicine-card:hover .medicine-card__image,
+.medicine-card:focus-within .medicine-card__image {
+  transform: scale(1.05);
+}
+
+/* Subtle top scrim — improves badge contrast, never hides info */
 .medicine-card__scrim {
   position: absolute;
   inset: 0;
   pointer-events: none;
-  background: linear-gradient(
-    to bottom,
-    rgba(255, 255, 255, 0) 26%,
-    color-mix(in srgb, var(--surface-alt, #eef4ff) 55%, transparent) 62%,
-    var(--surface-alt, #eef4ff) 88%
-  );
+  background: linear-gradient(to bottom, rgba(15, 23, 42, 0.14) 0%, rgba(15, 23, 42, 0) 34%);
 }
 
-.medicine-card__status {
+/* Hover-only "View Details" affordance (nothing critical hides behind it) */
+.medicine-card__hover-hint {
+  position: absolute;
+  left: 50%;
+  bottom: 0.8rem;
+  transform: translate(-50%, 6px);
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.32rem 0.75rem;
+  border-radius: 999px;
+  background: rgba(15, 23, 42, 0.78);
+  color: #fff;
+  font-size: 0.72rem;
+  font-weight: 700;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity var(--transition-fast), transform var(--transition-fast);
+  white-space: nowrap;
+}
+.medicine-card:hover .medicine-card__hover-hint,
+.medicine-card:focus-within .medicine-card__hover-hint {
+  opacity: 1;
+  transform: translate(-50%, 0);
+}
+
+/* ── Status badge: icon + text + colour (never colour alone) ── */
+.medicine-card__badge {
   position: absolute;
   top: 0.7rem;
   left: 0.7rem;
-  font-size: 0.68rem;
-  font-weight: 700;
-  padding: 0.18rem 0.55rem;
-  border-radius: 999px;
-  background: rgba(22, 163, 74, 0.92);
-  color: #fff;
   z-index: 3;
-}
-.medicine-card__status.inactive { background: rgba(220, 38, 38, 0.92); }
-
-/* ── White content panel ── */
-.medicine-card__panel {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  height: var(--panel-h);
-  z-index: 2;
-  background: var(--surface, #fff);
-  border-radius: var(--curve) var(--curve) 0 0;
-  padding: 0.85rem 1rem 0.75rem;
-  display: flex;
-  flex-direction: column;
-  box-shadow: 0 -10px 28px rgba(15, 23, 42, 0.1);
-  transition: height 0.38s cubic-bezier(0.4, 0, 0.2, 1);
-}
-.medicine-card:hover .medicine-card__panel,
-.medicine-card:focus-within .medicine-card__panel {
-  height: var(--panel-h-open);
-}
-
-/* Inverted organic fillet: concave curve connecting the panel's top-right
-   corner into the background image (classic radial "cut-out" trick). */
-.medicine-card__panel::before {
-  content: '';
-  position: absolute;
-  right: 0;
-  top: calc(var(--curve) * -1);
-  width: var(--curve);
-  height: var(--curve);
-  background: radial-gradient(
-    circle at 0% 0%,
-    transparent calc(var(--curve) - 0.5px),
-    var(--surface, #fff) var(--curve)
-  );
-  pointer-events: none;
-}
-
-/* ── Expandable detail area (indication-first) ── */
-.medicine-card__more {
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  padding-top: 0.55rem;
-  opacity: 0;
-  transform: translateY(10px);
-  transition: opacity 0.3s ease 0.1s, transform 0.3s ease 0.1s;
-}
-.medicine-card:hover .medicine-card__more,
-.medicine-card:focus-within .medicine-card__more {
-  opacity: 1;
-  transform: none;
-}
-.medicine-card__indication {
-  margin: 0;
-  font-size: 0.79rem;
-  line-height: 1.5;
-  color: var(--text-secondary, #475569);
-  display: -webkit-box;
-  -webkit-line-clamp: 3;
-  -webkit-box-orient: vertical;
-  overflow: hidden;
-}
-.medicine-card__indication-label {
   display: inline-flex;
   align-items: center;
   gap: 0.3rem;
-  font-size: 0.64rem;
+  font-size: 0.66rem;
   font-weight: 800;
-  letter-spacing: 0.07em;
-  text-transform: uppercase;
-  color: #15803d;
-  margin-bottom: 0.15rem;
+  letter-spacing: 0.02em;
+  padding: 0.22rem 0.6rem;
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-main);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-sm);
+  white-space: nowrap;
 }
+.medicine-card__badge-icon { font-size: 0.7rem; line-height: 1; }
+.medicine-card__badge.tone-success { background: var(--success-bg); color: var(--success); border-color: var(--success-border); }
+.medicine-card__badge.tone-warning { background: var(--warning-bg); color: var(--warning); border-color: var(--warning-border); }
+.medicine-card__badge.tone-danger  { background: var(--danger-bg);  color: var(--danger);  border-color: var(--danger-border); }
+.medicine-card__badge.tone-muted   { background: var(--surface-alt); color: var(--text-muted); border-color: var(--border); }
 
+/* ── Identity: generic name leads, brand supports ── */
+.medicine-card__body {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 auto;
+  padding: 0.85rem 1rem 0.9rem;
+}
 .medicine-card__title {
   margin: 0;
-  flex-shrink: 0;
-  font-size: 1.06rem;
+  font-size: 1.02rem;
   font-weight: 800;
-  color: var(--text-main, #1e293b);
+  letter-spacing: -0.01em;
   line-height: 1.25;
-  white-space: nowrap;
+  color: var(--text-main);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
   overflow: hidden;
-  text-overflow: ellipsis;
+  min-height: 1.28em;
 }
-.medicine-card__subtitle {
-  margin: 0.2rem 0 0;
-  flex-shrink: 0;
+.medicine-card__brand {
+  margin: 0.1rem 0 0;
   font-size: 0.78rem;
-  font-weight: 500;
-  color: var(--text-muted, #64748b);
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.medicine-card__meta {
+  margin: 0.35rem 0 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.medicine-card__pron {
+  margin: 0.4rem 0 0;
+  font-size: 0.7rem;
+  font-style: italic;
+  color: var(--text-faint);
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
 }
 
-.medicine-card__chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 0.3rem;
-}
-.medicine-card .chip {
-  font-size: 0.68rem;
-  font-weight: 600;
-  padding: 0.16rem 0.5rem;
-  border-radius: 999px;
-  background: var(--surface-alt, #f1f5f9);
-  color: var(--text-muted, #475569);
-  white-space: nowrap;
-}
-.medicine-card .chip--primary {
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
-  color: var(--primary);
-}
-.medicine-card .chip--tint {
-  background: rgba(124, 58, 237, 0.1);
-  color: #6d28d9;
-}
-
-/* ── Footer (always visible): stats + actions ── */
-.medicine-card__footer {
-  margin-top: auto;
-  flex-shrink: 0;
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.5rem;
+/* ── Stock summary rows (label ⟷ value, always aligned) ── */
+.medicine-card__facts {
+  margin-top: 0.75rem;
+  padding-top: 0.65rem;
   border-top: 1px solid var(--border);
-  padding-top: 0.55rem;
-}
-.medicine-card__stats {
   display: flex;
   flex-direction: column;
-  gap: 0.1rem;
-  font-size: 0.72rem;
+  gap: 0.28rem;
+  font-size: 0.76rem;
+}
+.medicine-card__fact {
+  display: grid;
+  grid-template-columns: minmax(64px, 0.8fr) 1.2fr;
+  align-items: baseline;
+  gap: 0.5rem;
+}
+.medicine-card__fact dt {
   color: var(--text-muted);
-  min-width: 0;
+  font-weight: 600;
 }
-.medicine-card__stats span {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  white-space: nowrap;
+.medicine-card__fact dd {
+  margin: 0;
+  color: var(--text-main);
+  font-weight: 700;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
 }
-.medicine-card__stats .stat-danger { color: var(--danger, #dc2626); font-weight: 700; }
-.medicine-card__stats .stat-warning { color: #b45309; font-weight: 700; }
 
+/* ── Actions footer: View Details + Sell + ⋮ ── */
 .medicine-card__actions {
+  margin-top: auto;
+  padding-top: 0.75rem;
   display: flex;
   align-items: center;
-  gap: 0.35rem;
-  flex-shrink: 0;
+  gap: 0.4rem;
 }
-.medicine-card__icon-btn {
-  width: 30px;
-  height: 30px;
-  border-radius: 10px;
+.medicine-card__actions .btn { flex: 1 1 auto; min-width: 0; }
+.medicine-card__actions .btn:first-child { flex: 1.4 1 auto; }
+
+/* ── Three-dot menu ── */
+.medicine-card__menu {
+  position: relative;
+  flex: 0 0 auto;
+  margin-left: auto;
+}
+.medicine-card__menu-btn {
   display: grid;
   place-items: center;
-  background: var(--surface-alt, #f1f5f9);
-  color: var(--text-secondary, #475569);
-  border: 1px solid var(--border);
+  width: 30px;
+  height: 34px;
+  border-radius: 8px;
+  border: 1px solid transparent;
+  background: none;
+  color: var(--text-muted);
   cursor: pointer;
-  transition: background 0.15s ease, color 0.15s ease, transform 0.15s ease, border-color 0.15s ease;
+  transition: background var(--transition-fast), color var(--transition-fast), border-color var(--transition-fast);
 }
-.medicine-card__icon-btn:hover {
-  background: color-mix(in srgb, var(--primary) 10%, transparent);
-  color: var(--primary);
-  border-color: color-mix(in srgb, var(--primary) 30%, transparent);
-  transform: translateY(-1px);
+.medicine-card__menu-btn:hover {
+  background: var(--accent-subtle);
+  color: var(--text-main);
+  border-color: var(--border);
 }
-.medicine-card__icon-btn.is-info {
-  background: color-mix(in srgb, var(--primary) 12%, transparent);
-  color: var(--primary);
-  border-color: transparent;
+.medicine-card__menu-pop {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 6px);
+  z-index: 30;
+  min-width: 176px;
+  padding: 0.3rem;
+  border-radius: 10px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  box-shadow: var(--shadow-lg);
+  display: flex;
+  flex-direction: column;
+  animation: medMenuIn 0.14s ease;
 }
-.medicine-card__icon-btn.danger:hover {
-  background: var(--danger-bg, #fef2f2);
-  color: var(--danger, #dc2626);
-  border-color: var(--danger-border, #fecaca);
+@keyframes medMenuIn {
+  from { opacity: 0; transform: translateY(4px); }
+  to { opacity: 1; transform: none; }
 }
-
-/* Short cards on narrow grids: keep the collapsed state comfortable */
-@media (max-width: 420px) {
-  .medicine-card {
-    height: 312px;
-    --panel-h: 104px;
-    --panel-h-open: 190px;
-  }
+.medicine-card__menu-pop button {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  width: 100%;
+  padding: 0.45rem 0.55rem;
+  border: 0;
+  border-radius: 7px;
+  background: none;
+  font: inherit;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
 }
+.medicine-card__menu-pop button:hover { background: var(--surface-hover); color: var(--text-main); }
+.medicine-card__menu-pop button.is-danger { color: var(--danger); }
+.medicine-card__menu-pop button.is-danger:hover { background: var(--danger-bg); color: var(--danger); }
 
 /* ===================================================
-   MOBILE: 2 medicine cards per row on phones.
-   The expanding panel is disabled below 640px — hover
-   doesn't exist on touch, so the full detail (indication,
-   chips, actions) is shown open at a compact size, and the
-   whole card opens the details modal on tap.
+   MOBILE (≤640px): 2 cards per row, image-cover hero
+   style — the image fills the card, a dark transparent →
+   dark gradient guarantees text readability, and only the
+   essential info floats over the image.
    =================================================== */
 @media (max-width: 640px) {
   .medicine-card-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 0.65rem;
   }
+
   .medicine-card {
-    height: 300px;
-    --panel-h: 208px;
-    --panel-h-open: 208px;
+    /* Fixed hero aspect keeps both cards in a row equal */
+    aspect-ratio: 0.78;
+    min-height: 218px;
   }
+
+  .medicine-card__media {
+    position: absolute;
+    inset: 0;
+    aspect-ratio: auto;
+  }
+  .medicine-card__media .medicine-card__image { object-fit: cover; }
+
+  /* Strong transparent → dark gradient for guaranteed readability */
+  .medicine-card__scrim {
+    background: linear-gradient(
+      to bottom,
+      rgba(15, 23, 42, 0.16) 0%,
+      rgba(15, 23, 42, 0.05) 30%,
+      rgba(15, 23, 42, 0.62) 62%,
+      rgba(15, 23, 42, 0.88) 100%
+    );
+  }
+
+  .medicine-card__badge {
+    top: 0.45rem;
+    left: 0.45rem;
+    font-size: 0.56rem;
+    padding: 0.16rem 0.45rem;
+    background: rgba(15, 23, 42, 0.55);
+    color: #fff;
+    border-color: transparent;
+    backdrop-filter: blur(4px);
+  }
+  .medicine-card__badge.tone-success { background: rgba(22, 128, 61, 0.82); color: #fff; }
+  .medicine-card__badge.tone-warning { background: rgba(161, 98, 7, 0.82); color: #fff; }
+  .medicine-card__badge.tone-danger  { background: rgba(185, 28, 28, 0.82); color: #fff; }
+  .medicine-card__badge.tone-muted   { background: rgba(71, 85, 105, 0.82); color: #fff; }
+
+  .medicine-card__hover-hint { display: none; }
   .medicine-card:hover,
   .medicine-card:focus-within { transform: none; }
-  /* No hover on touch — the panel is fully open by default */
-  .medicine-card__more { opacity: 1; transform: none; }
-  .medicine-card__panel { padding: 0.7rem 0.7rem 0.6rem; }
-  .medicine-card__title { font-size: 0.88rem; }
-  .medicine-card__subtitle { font-size: 0.66rem; }
-  .medicine-card__indication { font-size: 0.66rem; line-height: 1.45; -webkit-line-clamp: 3; }
-  .medicine-card__indication-label { font-size: 0.56rem; }
-  .medicine-card .chip { font-size: 0.56rem; padding: 0.12rem 0.4rem; }
-  .medicine-card__footer { padding-top: 0.4rem; flex-wrap: wrap; gap: 0.35rem; }
-  .medicine-card__stats { font-size: 0.6rem; }
-  .medicine-card__stats span { white-space: normal; }
-  .medicine-card__icon-btn { width: 26px; height: 26px; border-radius: 8px; }
-  .medicine-card__actions { gap: 0.25rem; }
-  .medicine-card__status { font-size: 0.56rem; padding: 0.14rem 0.45rem; top: 0.45rem; left: 0.45rem; }
-  .medicine-card__panel::before { display: none; }
+
+  /* Info floats over the gradient toward the bottom */
+  .medicine-card__body {
+    position: absolute;
+    inset: auto 0 0 0;
+    padding: 0.5rem 0.6rem 0.6rem;
+    color: #fff;
+  }
+  .medicine-card__title {
+    font-size: 0.86rem;
+    color: #fff;
+    -webkit-line-clamp: 2;
+    min-height: 0;
+  }
+  .medicine-card__brand,
+  .medicine-card__meta {
+    color: rgba(255, 255, 255, 0.85);
+    font-size: 0.64rem;
+  }
+  .medicine-card__pron { display: none; }
+
+  /* Mobile keeps only stock — batches/expiry live in the modal */
+  .medicine-card__facts {
+    border-top: 1px solid rgba(255, 255, 255, 0.22);
+    padding-top: 0.4rem;
+    margin-top: 0.5rem;
+    font-size: 0.68rem;
+    gap: 0.15rem;
+  }
+  .medicine-card__fact { grid-template-columns: 1fr auto; }
+  .medicine-card__fact dt { color: rgba(255, 255, 255, 0.75); }
+  .medicine-card__fact dd { color: #fff; }
+  .medicine-card__facts .medicine-card__fact:nth-child(2),
+  .medicine-card__facts .medicine-card__fact:nth-child(3) { display: none; }
+
+  .medicine-card__actions {
+    padding-top: 0.5rem;
+    gap: 0.3rem;
+  }
+  .medicine-card__actions .btn { font-size: 0.66rem; padding: 0.4rem 0.5rem; min-height: 30px; }
+  .medicine-card__actions .btn:first-child { flex: 2 1 auto; }
+  .medicine-card__menu-btn { width: 26px; height: 30px; color: rgba(255, 255, 255, 0.9); }
+  .medicine-card__menu-btn:hover { background: rgba(255, 255, 255, 0.15); color: #fff; border-color: transparent; }
+  .medicine-card__menu-pop { bottom: calc(100% + 4px); min-width: 160px; }
 }
 
-/* Genuine tiny phones: 2 columns kept, text shrinks to minimum readable size */
+/* Genuine tiny phones: keep 2 columns, shrink type to the readable floor */
 @media (max-width: 380px) {
   .medicine-card-grid { gap: 0.5rem; }
-  .medicine-card { height: 272px; --panel-h: 184px; --panel-h-open: 184px; }
-  .medicine-card__title { font-size: 0.8rem; }
-  .medicine-card__subtitle { font-size: 0.6rem; }
-  .medicine-card__indication { font-size: 0.58rem; }
-  .medicine-card .chip { font-size: 0.5rem; }
+  .medicine-card { aspect-ratio: 0.74; min-height: 200px; }
+  .medicine-card__title { font-size: 0.78rem; }
+  .medicine-card__brand,
+  .medicine-card__meta { font-size: 0.58rem; }
+  .medicine-card__facts { font-size: 0.62rem; }
 }

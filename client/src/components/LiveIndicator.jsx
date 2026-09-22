@@ -31,7 +31,7 @@ export const LiveIndicator = () => {
   return (
     <span className="live-indicator" title="Realtime updates active">
       <span className={`live-dot ${justUpdated ? 'pulse' : ''}`} />
-      {justUpdated ? 'Updating…' : 'Live'}
+      {justUpdated ? 'Updating…' : ''}
     </span>
   );
 };

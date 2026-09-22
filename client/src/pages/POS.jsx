@@ -3,10 +3,14 @@ import "./POS.css";
 import {
   AlertTriangle,
   CheckCircle2,
+  Package,
   Pill,
   QrCode,
   Search,
   ShoppingCart,
+  Sparkles,
+  Boxes,
+  CalendarClock,
   Trash2,
   X,
   ShieldCheck,
@@ -20,6 +24,7 @@ import { inventoryAPI, salesAPI, ddiAPI } from "../services/api";
 import { socket } from "../services/socket";
 import { useToast } from "../context/ToastContext";
 import { EmptyState } from "../components/Feedback";
+import { MedicineImage } from "../components/MedicineImage";
 
 /*
   POS WORKFLOW (prescription-type driven — there is NO "RX" button)
@@ -214,6 +219,8 @@ export const POS = ({
   onOpenBarcodeScanner,
   scannedMedicine,
   onClearScannedMedicine,
+  presetMedicine,
+  onClearPresetMedicine,
   cart: cartProp,
   setCart: setCartProp,
 }) => {
@@ -237,6 +244,13 @@ export const POS = ({
   const [showInteractionConfirm, setShowInteractionConfirm] = useState(false);
   const [showDetails, setShowDetails] = useState(false);
   const [overrideReason, setOverrideReason] = useState("");
+
+  /*
+    IDENTIFICATION HIGHLIGHT — the cart key of the medicine just handed over
+    from a "Sell" action. The matching card is ringed and badged for a few
+    seconds so the pharmacist can see instantly WHICH medicine was added.
+  */
+  const [justAddedKey, setJustAddedKey] = useState(null);
 
   /*
     SUCCESS MODAL STATE — printing is never part of the transaction.
@@ -337,6 +351,57 @@ export const POS = ({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [scannedMedicine]);
 
+  /*
+   * "Sell" in the Medicine Details view hands the EXACT medicine over.
+   * The live stock list is the source of truth (price, batch, stock), so the
+   * item is hydrated from it before joining the sale — the pharmacist sees the
+   * real, current medicine on the cart card, never a stale copy.
+   */
+  useEffect(() => {
+    if (!presetMedicine?.medicine) return;
+
+    // Wait for inventory: adding before it loads would show no batch/price.
+    if (stockLoading) return;
+
+    const preset = normalizeMedicine(presetMedicine.medicine);
+    const live =
+      stockList.find(
+        (row) =>
+          row.medicine_id === preset.medicine_id &&
+          preset.batch_id &&
+          row.batch_id === preset.batch_id
+      ) || stockList.find((row) => row.medicine_id === preset.medicine_id);
+
+    const medicine = live ? { ...live, batch_id: preset.batch_id ?? live.batch_id } : null;
+
+    /*
+     * POS never invents stock or price: if the medicine has no sellable batch
+     * in the live stock list we say so instead of adding a 0.00 line.
+     */
+    if (stockError && stockList.length === 0) {
+      toast.warning(
+        `Live stock is unavailable — retry the connection, then add ${preset.generic_name} again.`
+      );
+    } else if (!medicine) {
+      toast.warning(
+        `${preset.generic_name} has no sellable batch in inventory — resupply it first.`
+      );
+    } else {
+      addToCart(medicine);
+      setJustAddedKey(getCartItemKey(medicine));
+    }
+
+    if (onClearPresetMedicine) onClearPresetMedicine();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [presetMedicine, stockLoading]);
+
+  /* The "just added" ring fades by itself — it must never become a stale flag. */
+  useEffect(() => {
+    if (!justAddedKey) return;
+    const timer = setTimeout(() => setJustAddedKey(null), 6000);
+    return () => clearTimeout(timer);
+  }, [justAddedKey]);
+
   /* Drug–drug interaction checking on every cart change. */
   useEffect(() => {
     if (cart.length < 1) {
@@ -422,6 +487,15 @@ export const POS = ({
 
     if (!med.medicine_id) {
       toast.error("This medicine has no valid inventory ID.");
+      return;
+    }
+
+    // INACTIVE medicines must never be added to a new sale — even if a stale
+    // record somehow reaches the POS. (The stock list already filters them.)
+    if (med.status && String(med.status).toUpperCase() !== 'ACTIVE') {
+      toast.error(
+        `${med.generic_name} is inactive and cannot be sold. Please contact an administrator to activate it.`
+      );
       return;
     }
 
@@ -725,6 +799,7 @@ export const POS = ({
       // A NEW checkout after this success must be a NEW operation.
       operationIdRef.current = null;
       setCart([]);
+      setJustAddedKey(null);
       setOverrideReason("");
 
       refreshStock({ silent: true });
@@ -871,6 +946,9 @@ export const POS = ({
                       onClick={() => addToCart(medicine)}
                       className="pos-result-item"
                     >
+                      <span className="pos-result-thumb" aria-hidden="true">
+                        <MedicineImage className="medicine-image" src={medicine.image_url} alt={medicine.generic_name} />
+                      </span>
                       <span className="pos-result-name">
                         <strong>
                           {medicine.generic_name}
@@ -946,24 +1024,57 @@ export const POS = ({
                 1,
                 Math.floor(numberOr(item.stock_on_hand, 0) / stripSize)
               );
+              const itemKey = item.cart_key || getCartItemKey(item);
+              const isJustAdded = Boolean(justAddedKey) && justAddedKey === itemKey;
+              const unitPrice = numberOr(item.current_price, 0) / stripSize;
+              const expiryDays = item.expiry_date
+                ? Math.ceil((new Date(item.expiry_date) - new Date()) / 86400000)
+                : null;
+              const expiryTone =
+                expiryDays === null ? "" : expiryDays < 0 ? " danger" : expiryDays <= 90 ? " warn" : "";
 
               return (
-                <article key={item.cart_key || getCartItemKey(item)} className="pos-item-card">
-                  {/* header */}
+                <article
+                  key={itemKey}
+                  className={`pos-item-card${isJustAdded ? " is-new" : ""}`}
+                >
+                  {/* header — full identity of the medicine being dispensed */}
                   <header className="pos-item-head">
+                    <span className="pos-item-thumb" aria-hidden="true">
+                      <MedicineImage className="medicine-image" src={item.image_url} alt={item.generic_name} />
+                    </span>
                     <div className="pos-item-title">
+                      {isJustAdded && (
+                        <span className="pos-just-added">
+                          <Sparkles size={12} /> Just added to this sale
+                        </span>
+                      )}
                       <strong>
                         {item.generic_name}
                         {item.brand_name ? ` — ${item.brand_name}` : ""}
                       </strong>
                       <span className="muted-line">
-                        {[
-                          item.strength,
-                          item.batch_number ? `Batch: ${item.batch_number}` : null,
-                          item.expiry_date ? `Exp: ${String(item.expiry_date).slice(0, 10)}` : null,
-                        ]
+                        {[item.strength, item.dosage_form, item.prescription_type]
                           .filter(Boolean)
-                          .join(" · ")}
+                          .join(" · ") || "—"}
+                      </span>
+                      <span className="pos-ident-chips">
+                        {item.batch_number ? (
+                          <span className="pos-ident-chip">
+                            <Package size={12} /> Batch {item.batch_number}
+                          </span>
+                        ) : null}
+                        {item.expiry_date ? (
+                          <span className={`pos-ident-chip${expiryTone}`} title={`Expiry ${String(item.expiry_date).slice(0, 10)}`}>
+                            <CalendarClock size={12} /> Exp {String(item.expiry_date).slice(0, 10)}
+                          </span>
+                        ) : null}
+                        <span className="pos-ident-chip">
+                          <Boxes size={12} /> Stock {numberOr(item.stock_on_hand, 0)}
+                        </span>
+                        <span className="pos-ident-chip price">
+                          ETB {unitPrice.toFixed(2)} / dose
+                        </span>
                       </span>
                     </div>
                     <div className="pos-item-head-right">

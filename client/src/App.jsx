@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import { ToastProvider } from './context/ToastContext';
 import { ThemeProvider } from './context/ThemeContext';
+import { TermsProvider } from './context/TermsContext';
+import { TermsGate } from './components/TermsGate';
 import { Sidebar } from './components/Sidebar';
 import { Header } from './components/Header';
 import { BarcodeModal } from './components/BarcodeModal';
@@ -43,6 +45,14 @@ export function AppContent() {
    * are already in an ongoing sale.
    */
   const [posCart, setPosCart] = useState([]);
+  /*
+   * Cross-page intents coming out of the Medicine Details view:
+   *  - editMedicineId  → Drug Directory opens its Edit form pre-filled.
+   *  - posPreset       → POS adds that EXACT medicine to the current sale.
+   * Each intent carries a nonce so the same medicine can be queued twice.
+   */
+  const [editMedicineId, setEditMedicineId] = useState(null);
+  const [posPreset, setPosPreset] = useState(null);
 
   // Show the authentication page if not signed in
   if (!user) {
@@ -64,6 +74,22 @@ export function AppContent() {
   const handleRegisterUnknown = (code) => {
     setIsBarcodeOpen(false);
     setRegisterCode(code || null);
+    setActivePage('drugs');
+  };
+
+  /* "Sell" in the Medicine Details view → queue the exact medicine for POS. */
+  const handleSellMedicine = (med) => {
+    // Guest Mode has no POS: never queue a sale intent for the next session.
+    if (!isGuest && med?.medicine_id) {
+      setPosPreset({ medicine: med, nonce: Date.now() + Math.random() });
+    }
+    setActivePage('pos');
+  };
+
+  /* "Edit" in the Medicine Details view → open the Drug Directory edit form. */
+  const handleEditMedicine = (med) => {
+    const id = med?.medicine_id ?? med?.id ?? med ?? null;
+    if (id) setEditMedicineId(String(id));
     setActivePage('drugs');
   };
 
@@ -91,13 +117,21 @@ export function AppContent() {
           {activePage === 'dashboard' && <Dashboard onNavigate={(page) => setActivePage(page)} />}
           {activePage === 'drugs' && (
             <Drugs
-              onOpenPOS={() => setActivePage('pos')}
+              onOpenPOS={handleSellMedicine}
               prefillCode={registerCode}
               onConsumePrefill={() => setRegisterCode(null)}
               onNavigateImport={() => setActivePage('import')}
+              editMedicineId={editMedicineId}
+              onConsumeEditMedicine={() => setEditMedicineId(null)}
             />
           )}
-          {activePage === 'inventory' && <Inventory onNavigate={(page) => setActivePage(page)} />}
+          {activePage === 'inventory' && (
+            <Inventory
+              onNavigate={(page) => setActivePage(page)}
+              onEditMedicine={handleEditMedicine}
+              onSellMedicine={handleSellMedicine}
+            />
+          )}
           {activePage === 'import' && (
             isGuest ? (
               <GuestOnlyPage
@@ -120,6 +154,8 @@ export function AppContent() {
                 onOpenBarcodeScanner={() => setIsBarcodeOpen(true)}
                 scannedMedicine={scannedMed}
                 onClearScannedMedicine={() => setScannedMed(null)}
+                presetMedicine={posPreset}
+                onClearPresetMedicine={() => setPosPreset(null)}
                 cart={posCart}
                 setCart={setPosCart}
               />
@@ -163,11 +199,15 @@ export function AppContent() {
 export default function App() {
   return (
     <ThemeProvider>
-      <AuthProvider>
-        <ToastProvider>
-          <AppContent />
-        </ToastProvider>
-      </AuthProvider>
+      <TermsProvider>
+        <TermsGate>
+          <AuthProvider>
+            <ToastProvider>
+              <AppContent />
+            </ToastProvider>
+          </AuthProvider>
+        </TermsGate>
+      </TermsProvider>
     </ThemeProvider>
   );
 }

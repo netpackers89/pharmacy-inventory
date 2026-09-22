@@ -1,0 +1,51 @@
+import React, { createContext, useContext, useState, useEffect, useCallback } from 'react';
+
+const TermsContext = createContext();
+
+const STORAGE_KEY = 'pharm_terms_accepted_v1';
+const TERMS_VERSION = 'v1.0';
+
+export const TermsProvider = ({ children }) => {
+  const [accepted, setAccepted] = useState(() => {
+    try {
+      const saved = localStorage.getItem(STORAGE_KEY);
+      if (saved === TERMS_VERSION) return true;
+    } catch (_) { /* storage unavailable */ }
+    return false;
+  });
+
+  const acceptTerms = useCallback(() => {
+    try { localStorage.setItem(STORAGE_KEY, TERMS_VERSION); } catch (_) {}
+    setAccepted(true);
+  }, []);
+
+  // Allow admin to bump the version and force re-acceptance.
+  const rejectTerms = useCallback(() => {
+    try { localStorage.removeItem(STORAGE_KEY); } catch (_) {}
+    setAccepted(false);
+  }, []);
+
+  // Respond to storage changes from other tabs.
+  useEffect(() => {
+    const handler = (e) => {
+      if (e.key === STORAGE_KEY) {
+        const current = tryRead(STORAGE_KEY);
+        setAccepted(current === TERMS_VERSION);
+      }
+    };
+    window.addEventListener('storage', handler);
+    return () => window.removeEventListener('storage', handler);
+  }, []);
+
+  return (
+    <TermsContext.Provider value={{ accepted, acceptTerms, rejectTerms, termsVersion: TERMS_VERSION }}>
+      {children}
+    </TermsContext.Provider>
+  );
+};
+
+function tryRead(key) {
+  try { return localStorage.getItem(key); } catch (_) { return null; }
+}
+
+export const useTerms = () => useContext(TermsContext);

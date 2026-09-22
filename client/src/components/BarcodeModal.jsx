@@ -42,6 +42,7 @@ export const BarcodeModal = ({ isOpen, onClose, onScanSuccess, onRegisterRequest
   const [isLookingUp, setIsLookingUp] = useState(false);
   const [isSwapping, setIsSwapping] = useState(false);
   const [flash, setFlash] = useState(false); // success pulse
+  const [cameraConsentGiven, setCameraConsentGiven] = useState(false);
 
   const [frameKey, setFrameKey] = useState(() => {
     try { return localStorage.getItem(FRAME_STORAGE_KEY) || 'M'; } catch { return 'M'; }
@@ -145,7 +146,7 @@ export const BarcodeModal = ({ isOpen, onClose, onScanSuccess, onRegisterRequest
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stopScanner]);
 
-  /* Start/stop with modal open state AND frame changes (instant frame swap) */
+    /* Start/stop with modal open state AND frame changes (instant frame swap) */
   useEffect(() => {
     if (!isOpen) return undefined;
 
@@ -159,11 +160,13 @@ export const BarcodeModal = ({ isOpen, onClose, onScanSuccess, onRegisterRequest
       setIsScanning(false);
       setUnknownCode(null);
       setTorchOn(false);
+      // Reset camera consent each time the modal opens — never auto-start the
+      // camera. The user must explicitly opt in to camera access.
+      setCameraConsentGiven(false);
       processingRef.current = false;
       lastScanRef.current = { code: null, at: 0 };
 
-      await startScanner(frame);
-      if (cancelled) await stopScanner();
+      // Do NOT start the scanner automatically. The user confirms consent below.
     };
 
     boot();
@@ -175,6 +178,13 @@ export const BarcodeModal = ({ isOpen, onClose, onScanSuccess, onRegisterRequest
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isOpen]);
+
+  /* When consent is given, start the scanner */
+  useEffect(() => {
+    if (isOpen && cameraConsentGiven && !isScanning) {
+      startScanner(frame).catch(() => {});
+    }
+  }, [isOpen, cameraConsentGiven]);
 
   /* Frame change while open: warm-swap the scanner (permission already held) */
   const changeFrame = async (key) => {

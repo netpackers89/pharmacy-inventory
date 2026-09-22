@@ -1,106 +1,351 @@
-/* ── Medicine Learning Modal ────────────────────────────────────────────── */
+/* ══════════════════════════════════════════════════════════════════════════
+   MEDICINE DETAILS VIEW  (MedicineLearnModal)
+   ──────────────────────────────────────────────────────────────────────────
+   Mobile-first. Four deliberate tiers — the phone layout is NOT the desktop
+   layout squeezed down, and the tablet layout is NOT an enlarged phone:
+
+     phone           ≤ 480px    compact native pharmacy app
+     large mobile  481–599px    roomier single column
+     tablet        600–1024px   image beside the identity block,
+                                4-up stat strip, 2-column information cards
+     desktop       ≥ 1025px     hero column + information column
+
+   Colours come from the design tokens (styles/variables.css) so the dark
+   theme needs no extra rules.
+
+   Layout guarantees — no horizontal page scrolling at any width:
+     • the sheet is a flex column: header · scrolling body · action bar,
+       so the Sell/Resupply bar can never cover content
+     • every grid track is minmax(0, 1fr), so tracks are allowed to shrink
+     • every flex/grid child has min-width: 0
+     • all user text wraps (overflow-wrap: anywhere) — never nowrap/ellipsis
+     • tables scroll inside .lm-batch-scroll only
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Overlay + sheet ─────────────────────────────────────────────────────── */
+
+/* Backdrop blur for this modal only (modern browsers, graceful fallback) */
+.modal-overlay:has(> .lm) {
+  align-items: stretch;          /* phone: the sheet owns the whole screen */
+  padding: 0;
+  backdrop-filter: blur(5px);
+  -webkit-backdrop-filter: blur(5px);
+}
 
 .lm {
-  background: var(--surface, #fff);
-  border-radius: 18px;
-  width: min(940px, 94vw);
-  max-height: 90vh;
-  overflow-y: auto;
   position: relative;
+  display: flex;
+  flex-direction: column;        /* header / scrolling body / action bar */
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  min-height: 100vh;
+  min-height: 100dvh;
+  max-height: 100vh;
+  max-height: 100dvh;
   padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--surface);
+  color: var(--text-main);
+  overflow: hidden;              /* the body region owns the scrolling */
   animation: lmIn 0.2s ease;
-  box-shadow: 0 25px 60px -15px rgba(0,0,0,0.25);
 }
 @keyframes lmIn { from { transform: translateY(12px) scale(0.98); opacity: 0; } to { transform: none; opacity: 1; } }
 
-.lm__close {
-  position: absolute; top: 1rem; right: 1rem; z-index: 10;
-  border: 0; background: var(--surface-alt, #f1f5f9);
-  border-radius: 50%; width: 32px; height: 32px;
-  display: grid; place-items: center; cursor: pointer;
-  color: var(--text-muted, #64748b); transition: all 0.15s;
+/* Loading / error state stays vertically centred inside the sheet */
+.lm__loading {
+  flex: 1 1 auto;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  padding: 2rem 1.25rem;
+  text-align: center;
+  font-size: 0.9rem;
+  color: var(--text-muted);
 }
-.lm__close:hover { background: var(--border, #e2e8f0); color: var(--text, #1e293b); }
-
-.lm__loading { padding: 3rem 1rem; text-align: center; color: var(--text-muted, #64748b); font-size: 0.9rem; }
 .lm__spinner {
-  width: 28px; height: 28px; margin: 0 auto 0.8rem;
-  border: 3px solid var(--border, #e2e8f0);
-  border-top-color: var(--primary, #2563eb);
+  width: 28px; height: 28px; margin-bottom: 0.55rem;
+  border: 3px solid var(--border);
+  border-top-color: var(--primary);
   border-radius: 50%;
   animation: lmSpin 0.7s linear infinite;
 }
 @keyframes lmSpin { to { transform: rotate(360deg); } }
 
-/* ── Top: cover + main info (GoodReads-style) ── */
-.lm__top {
-  display: grid;
-  grid-template-columns: 220px 1fr;
-  gap: 1.6rem;
-  padding: 1.6rem 1.8rem 1.4rem;
-  background: linear-gradient(135deg, var(--accent-subtle, #eef4ff) 0%, var(--surface, #fff) 100%);
-  border-bottom: 1px solid var(--border, #e2e8f0);
+/* Round close button — also reused by the reorder-worksheet modal */
+.lm__close {
+  position: absolute; top: 1rem; right: 1rem; z-index: 10;
+  display: grid; place-items: center;
+  width: 32px; height: 32px;
+  border: 0; border-radius: 50%;
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
 }
-.lm__cover-wrap {
+.lm__close:hover { background: var(--border); color: var(--text-main); }
+/* ── Header: Back · status · actions ─────────────────────────────────────── */
+.lm__topbar {
+  flex: 0 0 auto;
+  z-index: 20;
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.45rem;
+  min-width: 0;
+  padding: 0.55rem 0.7rem;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.lm__back {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  flex: 0 0 auto;
+  min-height: 38px;
+  padding: 0.25rem 0.5rem;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--text-secondary);
+  font-size: 0.86rem; font-weight: 700;
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast);
+}
+.lm__back:hover { background: var(--surface-hover); color: var(--text-main); }
+
+/* Status chips — icon + label, never colour alone */
+.lm__status-badge {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  flex: 0 0 auto;
+  padding: 0.2rem 0.55rem;
+  border-radius: var(--radius-full);
+  background: var(--success-bg);
+  color: var(--success);
+  font-size: 0.68rem; font-weight: 700; line-height: 1.6;
+  white-space: nowrap;
+}
+.lm__status-badge.inactive      { background: var(--danger-bg); color: var(--danger); }
+.lm__status-badge.stock-success { background: var(--success-bg); color: var(--success); }
+.lm__status-badge.stock-warning { background: var(--warning-bg); color: var(--warning); }
+.lm__status-badge.stock-danger  { background: var(--danger-bg);  color: var(--danger); }
+.lm__status-badge.stock-muted   { background: var(--surface-alt); color: var(--text-muted); }
+
+/* Actions: [✏ Edit] [⋮] on phones, gear menu from 481px up */
+.lm__actions {
   position: relative;
+  display: flex; align-items: center; gap: 0.35rem;
+  margin-left: auto;
+  flex: 0 0 auto;
+  min-width: 0;
+}
+.lm__quick-edit {
+  display: none;                 /* enabled on phones only (see ≤480px) */
+  align-items: center; gap: 0.3rem;
+  min-height: 38px; padding: 0 0.7rem;
+  border: 1px solid var(--border-strong); border-radius: var(--radius-md);
+  background: var(--surface); color: var(--text-main);
+  font-size: 0.8rem; font-weight: 700; cursor: pointer;
+  transition: background-color var(--transition-fast);
+}
+.lm__quick-edit:hover { background: var(--surface-hover); }
+
+.lm__gear-btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 38px; height: 38px;
+  border: 1px solid var(--border); border-radius: var(--radius-md);
+  background: var(--surface); color: var(--text-main);
+  cursor: pointer;
+  transition: background-color var(--transition-fast), border-color var(--transition-fast);
+}
+.lm__gear-btn:hover { background: var(--surface-hover); border-color: var(--border-strong); }
+.lm__icon-more { display: none; }          /* phones swap the gear for ⋮ */
+
+.lm__actions-menu {
+  position: absolute; right: 0; top: calc(100% + 0.35rem); z-index: 30;
+  display: flex; flex-direction: column; gap: 0.1rem;
+  width: max-content;
+  min-width: 200px; max-width: min(280px, calc(100vw - 1.6rem));
+  padding: 0.3rem;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--shadow-lg);
+}
+.lm__actions-menu button {
+  display: flex; align-items: center; gap: 0.5rem;
+  width: 100%; min-height: 42px; padding: 0.45rem 0.55rem;
+  border: 0; border-radius: var(--radius-sm);
+  background: transparent; color: var(--text-main);
+  font-size: 0.82rem; font-weight: 600; text-align: left;
+  cursor: pointer;
+}
+.lm__actions-menu button:hover:not(:disabled) { background: var(--surface-hover); }
+.lm__actions-menu button:disabled { opacity: 0.55; cursor: not-allowed; }
+.lm__actions-menu-sep { display: block; height: 1px; margin: 0.2rem 0.3rem; background: var(--border); }
+.lm__actions-menu-danger { color: var(--danger) !important; }
+.lm__actions-menu-danger:hover:not(:disabled) { background: var(--danger-bg) !important; }
+/* ── Body: the only region that scrolls ──────────────────────────────────── */
+.lm__detail-grid {
+  flex: 1 1 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-content: start;
+  gap: 1rem;
+  padding: 0.9rem 0.8rem 1.6rem;   /* roomy bottom padding: nothing is hidden */
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;              /* safety net — the layout itself cannot overflow */
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Nothing inside the sheet may be forced wider than its column */
+.lm__hero, .lm__detail-main, .lm__quick-stats, .lm__info, .lm__accordion, .lm-acc,
+.lm-acc__body, .lm__kv, .lm__kv-row, .lm__bincard, .lm__extra-grid, .lm__details,
+.lm__topbar, .lm__footer-bar { min-width: 0; }
+
+/* ── Hero: contained packaging image + identity ──────────────────────────── */
+.lm__hero {
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding-top: 0.8rem;
+  gap: 0.8rem;
 }
-/* organic accent blob behind the cover, like a bookmark highlight */
-.lm__cover-blob {
-  position: absolute;
-  top: 0;
-  left: 50%;
-  transform: translateX(-58%);
-  width: 128px;
-  height: 128px;
-  border-radius: 46% 54% 52% 48% / 52% 46% 54% 48%;
-  background: linear-gradient(135deg, rgba(234, 179, 8, 0.35), rgba(250, 204, 21, 0.22));
-  pointer-events: none;
+.lm__detail-cover-wrap {
+  display: flex;
+  justify-content: center;
+  width: 100%;
+  min-width: 0;
 }
-.lm__cover {
-  position: relative;
-  width: 168px;
-  height: 168px;
-  border-radius: 14px;
+.lm__detail-cover {
+  display: grid; place-items: center;
+  width: clamp(140px, 45vw, 180px);   /* phone: 140–180px, never oversized */
+  aspect-ratio: 1 / 1;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  background: var(--surface-alt);
   overflow: hidden;
-  background: var(--surface, #fff);
-  border: 2px solid var(--surface, #fff);
-  box-shadow: 0 8px 22px rgba(15, 23, 42, 0.14);
+  flex: 0 0 auto;
 }
-.lm__cover img { width: 100%; height: 100%; object-fit: cover; }
+.lm__detail-cover .medicine-image {
+  display: block;
+  width: 100%; height: 100%;
+  object-fit: contain;                /* never crop the medicine package */
+}
 
-.lm__main { min-width: 0; padding-top: 0.3rem; }
-.lm__main-title {
-  margin: 0.15rem 0 0.1rem;
-  font-size: 1.65rem;
+.lm__detail-main { width: 100%; text-align: center; }
+
+.lm__detail-rx {
+  display: inline-block;
+  margin-bottom: 0.4rem;
+  padding: 0.16rem 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--accent-subtle);
+  color: var(--text-secondary);
+  font-size: 0.64rem; font-weight: 800;
+  letter-spacing: 0.06em; text-transform: uppercase;
+}
+
+.lm__detail-title {
+  margin: 0 0 0.3rem;
+  font-size: 1.35rem;                 /* phone: 21.6px */
   font-weight: 800;
-  letter-spacing: -0.01em;
-  color: var(--text-main, #1e293b);
-  line-height: 1.15;
-}
-.lm__byline {
-  margin: 0 0 0.35rem;
-  font-size: 0.82rem;
-  color: var(--text-muted, #64748b);
-}
-.lm__byline strong { color: var(--primary, #2563eb); font-weight: 700; }
-.lm__main-sub {
-  margin: 0 0 0.55rem;
-  color: var(--text-muted, #64748b);
-  font-size: 0.88rem;
-  font-style: italic;
+  line-height: 1.25;
+  letter-spacing: -0.015em;
+  color: var(--text-main);
+  overflow-wrap: anywhere;            /* the full name always stays readable */
+  word-break: break-word;
 }
 
-/* Description with read-more clamp */
+.lm__detail-byline {
+  margin: 0 0 0.15rem;
+  font-size: 0.79rem; line-height: 1.45;
+  color: var(--text-muted);
+  overflow-wrap: anywhere;
+}
+.lm__detail-byline strong { color: var(--text-main); font-weight: 700; }
+
+.lm__detail-sub {
+  margin: 0.5rem 0 0;
+  font-size: 0.82rem; line-height: 1.5;
+  font-weight: 600;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
+}
+.lm__detail-sub span { display: block; }
+.lm__detail-sub span + span { font-weight: 500; color: var(--text-muted); }
+
+.lm__hero-tags {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 0.3rem;
+  margin-top: 0.6rem;
+  min-width: 0;
+}
+.lm-tag {
+  display: inline-block;
+  max-width: 100%;
+  padding: 0.16rem 0.55rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-full);
+  background: var(--surface-alt);
+  color: var(--text-secondary);
+  font-size: 0.67rem; font-weight: 600;
+  overflow-wrap: anywhere;
+}
+.lm-tag--primary { background: var(--accent-subtle); border-color: var(--border-strong); color: var(--text-main); }
+.lm-tag--amber   { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
+.lm-tag--ok      { background: var(--success-bg); border-color: var(--success-border); color: var(--success); }
+.lm-tag--muted   { background: var(--surface-alt); color: var(--text-muted); }
+/* ── Pronunciation: two compact lines per language on phones ────────────── */
+.lm__detail-pron {
+  margin-top: 0.7rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-alt);
+  text-align: left;
+}
+.lm__pron-title {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  margin-bottom: 0.4rem;
+  font-size: 0.64rem; font-weight: 800;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.lm__pron-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  grid-template-areas:
+    "lang lang"
+    "text speaker";
+  align-items: center;
+  gap: 0.15rem 0.5rem;
+  padding: 0.35rem 0;
+}
+.lm__pron-row + .lm__pron-row { border-top: 1px solid var(--border); }
+.lm__pron-lang { grid-area: lang; font-size: 0.72rem; font-weight: 700; color: var(--text-secondary); }
+.lm__pron-text {
+  grid-area: text;
+  min-width: 0;
+  font-size: 0.86rem; font-style: italic;
+  color: var(--text-main);
+  overflow-wrap: anywhere; word-break: break-word;
+}
+.lm__pron-text[lang="am"] { font-size: 0.95rem; font-style: normal; }
+/* Compact speaker button (overrides the shared 48px default by specificity) */
+.lm__pron-row .pron-speaker {
+  grid-area: speaker;
+  min-height: 44px; min-width: 44px;
+  padding: 0.25rem 0.5rem;
+}
+
+/* ── Description with read-more clamp ───────────────────────────────────── */
 .lm__desc-block { margin-top: 0.7rem; }
 .lm__desc-text {
   margin: 0;
-  font-size: 0.87rem;
-  line-height: 1.65;
-  color: var(--text-secondary, #475569);
+  font-size: 0.84rem; line-height: 1.65;
+  color: var(--text-secondary);
+  overflow-wrap: anywhere;
 }
 .lm__desc-text.clamped {
   display: -webkit-box;
@@ -109,171 +354,326 @@
   overflow: hidden;
 }
 .lm__readmore {
-  margin-top: 0.25rem;
-  padding: 0;
-  border: 0;
-  background: none;
-  cursor: pointer;
-  font: inherit;
-  font-size: 0.8rem;
-  font-weight: 700;
-  color: var(--primary, #2563eb);
-}
-.lm__readmore:hover { text-decoration: underline; }
-.lm__hero-tags { display: flex; flex-wrap: wrap; gap: 0.35rem; }
-
-.lm-tag {
-  display: inline-block; font-size: 0.7rem; font-weight: 600;
-  padding: 0.2rem 0.6rem; border-radius: 999px;
-  background: var(--surface-alt, #f1f5f9); color: var(--text-secondary, #475569);
-  border: 1px solid var(--border, #e2e8f0);
-}
-.lm-tag--primary { background: rgba(37, 99, 235, 0.1); color: var(--primary, #2563eb); border-color: rgba(37, 99, 235, 0.2); }
-.lm-tag--ok { background: rgba(22, 163, 74, 0.1); color: #15803d; border-color: rgba(22, 163, 74, 0.2); }
-.lm-tag--muted { background: var(--surface-alt, #f1f5f9); color: var(--text-muted, #94a3b8); }
-
-/* ── Rx pill (kept from previous hero) ── */
-.lm__hero-rx {
-  display: inline-block; font-size: 0.68rem; font-weight: 700;
-  padding: 0.2rem 0.6rem; border-radius: 999px;
-  background: rgba(37, 99, 235, 0.1); color: var(--primary, #2563eb);
-  letter-spacing: 0.03em; text-transform: uppercase;
+  margin-top: 0.3rem; padding: 0.2rem 0;
+  border: 0; background: none; cursor: pointer;
+  font: inherit; font-size: 0.78rem; font-weight: 800;
+  color: var(--text-main);
+  text-decoration: underline;
 }
 
-/* ── Featured Indications section (main focus) ── */
-.lm__featured {
-  border: 1px solid rgba(22, 163, 74, 0.25);
-  background: linear-gradient(135deg, rgba(22, 163, 74, 0.06), rgba(22, 163, 74, 0.02));
-  border-radius: 14px;
-  padding: 1rem 1.2rem 1.1rem;
-}
-.lm__featured-head {
-  display: flex;
-  align-items: center;
-  gap: 0.55rem;
-  margin-bottom: 0.45rem;
-}
-.lm__featured-icon {
+/* ── Quick stats: 2 compact columns on phones, one row on tablets ───────── */
+.lm__quick-stats {
   display: grid;
-  place-items: center;
-  width: 32px;
-  height: 32px;
-  border-radius: 10px;
-  background: rgba(22, 163, 74, 0.12);
-  color: #15803d;
-  flex-shrink: 0;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.5rem;
 }
-.lm__featured-head h2 {
-  margin: 0;
-  font-size: 1.02rem;
-  font-weight: 800;
-  color: #14532d;
+.lm-qstat {
+  display: flex; flex-direction: column; gap: 0.05rem;
+  padding: 0.55rem 0.65rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface-alt);
 }
-.lm__featured-hint {
-  margin-left: auto;
-  font-size: 0.72rem;
-  color: var(--text-muted, #94a3b8);
-  font-style: italic;
+.lm-qstat__lbl {
+  font-size: 0.61rem; font-weight: 800;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted);
 }
-.lm__featured-body {
-  margin: 0;
-  font-size: 0.95rem;
-  line-height: 1.7;
-  color: var(--text-main, #1e293b);
+.lm-qstat__val { font-size: 1rem; font-weight: 800; color: var(--text-main); overflow-wrap: anywhere; }
+.lm-qstat__val--success { color: var(--success); }
+.lm-qstat__val--danger  { color: var(--danger); }
+.lm-qstat__hint { font-size: 0.67rem; font-weight: 700; color: var(--text-muted); overflow-wrap: anywhere; }
+.lm-qstat__hint--success { color: var(--success); }
+.lm-qstat__hint--warning { color: var(--warning); }
+.lm-qstat__hint--danger  { color: var(--danger); }
+.lm-qstat__hint--muted   { color: var(--text-muted); }
+/* ── Medical information: one expandable card per topic ─────────────────── */
+.lm__accordion {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.45rem;
+  align-items: start;
 }
+.lm-acc {
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  overflow: hidden;
+}
+.lm-acc__head {
+  all: unset;
+  box-sizing: border-box;
+  display: flex; align-items: center; gap: 0.5rem;
+  width: 100%; min-height: 48px;
+  padding: 0.55rem 0.75rem;
+  font-size: 0.88rem; font-weight: 700;
+  color: var(--text-main);
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.lm-acc__head:hover { background: var(--surface-hover); }
+.lm-acc__head:focus-visible { outline: 2px solid var(--primary); outline-offset: -2px; }
+.lm-acc__icon { display: grid; place-items: center; flex: 0 0 auto; color: var(--text-muted); }
+.lm-acc__title { flex: 1 1 auto; min-width: 0; text-align: left; overflow-wrap: anywhere; }
+.lm-acc__chev { flex: 0 0 auto; color: var(--text-muted); transition: transform var(--transition-normal); }
+.lm-acc__chev.open { transform: rotate(180deg); }
 
-/* ── Drug details table (book-details style) ── */
-.lm__details { padding: 0 0.1rem; }
+/* Tone accents (icon + title) — token colours keep both themes readable */
+.lm-acc--primary .lm-acc__icon { color: var(--info); }
+.lm-acc--red .lm-acc__head,
+.lm-acc--red .lm-acc__icon     { color: var(--danger); }
+.lm-acc--amber .lm-acc__head,
+.lm-acc--amber .lm-acc__icon   { color: var(--warning); }
+.lm-acc--green .lm-acc__head,
+.lm-acc--green .lm-acc__icon   { color: var(--success); }
+.lm-acc--muted .lm-acc__icon   { color: var(--text-muted); }
+
+/* Smooth expand / collapse — the grid-rows trick animates any content height */
+.lm-acc__panel {
+  display: grid;
+  grid-template-rows: 0fr;
+  transition: grid-template-rows var(--transition-normal);
+}
+.lm-acc__panel.is-open { grid-template-rows: 1fr; }
+.lm-acc__body {
+  min-height: 0;
+  padding: 0 0.75rem;
+  overflow: hidden;
+  font-size: 0.84rem; line-height: 1.65;
+  color: var(--text-secondary);
+  visibility: hidden;                                  /* collapsed = not focusable */
+  transition: visibility 0s linear 220ms, padding 0s linear 220ms;
+}
+.lm-acc__panel.is-open > .lm-acc__body {
+  visibility: visible;
+  padding-bottom: 0.8rem;
+  transition-delay: 0s;
+}
+.lm-acc__text { margin: 0; overflow-wrap: anywhere; }
+
+/* Key / value rows inside a card */
+.lm__kv { margin: 0; }
+.lm__kv-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1.2fr);
+  gap: 0.15rem 0.7rem;
+  padding: 0.35rem 0;
+  border-bottom: 1px solid var(--border);
+}
+.lm__kv-row:last-child { border-bottom: 0; }
+.lm__kv-row dt { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); overflow-wrap: anywhere; }
+.lm__kv-row dd { margin: 0; font-size: 0.82rem; font-weight: 600; color: var(--text-main); overflow-wrap: anywhere; }
+.lm__kv-note { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px dashed var(--border); }
+.lm__kv-note-title {
+  display: inline-flex; align-items: center; gap: 0.3rem;
+  font-size: 0.68rem; font-weight: 800;
+  letter-spacing: 0.05em; text-transform: uppercase;
+  color: var(--text-muted);
+}
+.lm__kv-note p { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+/* ── Bin card: stock summary + batch ledger ─────────────────────────────── */
+.lm__bincard {
+  padding: 0.8rem 0.75rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.lm__bincard-title {
+  display: inline-flex; align-items: center; gap: 0.4rem;
+  margin: 0 0 0.7rem;
+  font-size: 0.95rem; font-weight: 800;
+  color: var(--text-main);
+}
+.lm__stats-bar {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.45rem;
+  margin-bottom: 0.85rem;
+}
+.lm-stat {
+  display: flex; flex-direction: column; align-items: center; gap: 0.05rem;
+  padding: 0.5rem 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+}
+.lm-stat__num { font-size: 0.98rem; font-weight: 800; color: var(--text-main); text-align: center; overflow-wrap: anywhere; }
+.lm-stat__lbl { font-size: 0.61rem; font-weight: 700; color: var(--text-muted); text-align: center; }
+
+/* Batch ledger — the only table, and it scrolls inside its own box */
+.lm-batch-scroll {
+  width: 100%; max-width: 100%; min-width: 0;
+  overflow-x: auto;
+  overscroll-behavior-x: contain;
+  -webkit-overflow-scrolling: touch;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.lm-batch-table { min-width: 560px; }
+.lm-batch-table .badge { font-size: 0.68rem; }
+
+/* ── Stock / pricing / supplier panels ──────────────────────────────────── */
+.lm__extra-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.85rem;
+}
+.lm__extra-grid > .lm__details {
+  padding: 0.75rem 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+}
+.lm__details--suppliers { grid-column: 1 / -1; }
+
 .lm__details-title {
-  margin: 0 0 0.4rem;
-  font-size: 0.78rem;
-  font-weight: 800;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  color: var(--text-muted, #94a3b8);
+  display: inline-flex; align-items: center; gap: 0.35rem;
+  margin: 0 0 0.5rem;
+  font-size: 0.7rem; font-weight: 800;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  color: var(--text-muted);
 }
 .lm__details-table { margin: 0; }
 .lm__details-row {
   display: grid;
-  grid-template-columns: 180px 1fr;
-  gap: 1rem;
-  padding: 0.45rem 0.2rem;
-  border-bottom: 1px solid var(--border, #e2e8f0);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 0.1rem;
+  padding: 0.4rem 0;
+  border-bottom: 1px solid var(--border);
 }
-.lm__details-row:last-child { border-bottom: none; }
-.lm__details-row dt {
-  font-size: 0.78rem;
-  font-weight: 700;
-  color: var(--text-main, #1e293b);
-}
-.lm__details-row dd {
-  margin: 0;
-  font-size: 0.8rem;
-  line-height: 1.55;
-  color: var(--text-secondary, #475569);
-  word-break: break-word;
-}
+.lm__details-row:last-child { border-bottom: 0; }
+.lm__details-row dt { font-size: 0.73rem; font-weight: 700; color: var(--text-muted); overflow-wrap: anywhere; }
+.lm__details-row dd { margin: 0; font-size: 0.82rem; font-weight: 600; color: var(--text-secondary); overflow-wrap: anywhere; }
 
-/* ── Stats Bar ── */
-.lm__stats-bar {
-  display: grid; grid-template-columns: repeat(4, 1fr);
-  gap: 0; border-bottom: 1px solid var(--border, #e2e8f0);
+.lm__suppliers { display: flex; flex-direction: column; gap: 0.5rem; }
+.lm__supplier {
+  display: flex; align-items: center; gap: 0.6rem;
+  padding: 0.5rem 0.7rem;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  min-width: 0;
 }
-.lm-stat {
-  display: flex; flex-direction: column; align-items: center; gap: 0.2rem;
-  padding: 0.9rem 0.5rem; color: var(--text-muted, #64748b);
-  border-right: 1px solid var(--border, #e2e8f0);
-}
-.lm-stat:last-child { border-right: none; }
-.lm-stat__num { font-weight: 800; font-size: 1.1rem; color: var(--text-main, #1e293b); }
-.lm-stat__lbl { font-size: 0.68rem; color: var(--text-muted, #94a3b8); text-align: center; font-weight: 500; }
+.lm__supplier > svg { flex: 0 0 auto; }
+.lm__supplier > div { min-width: 0; }
+.lm__supplier strong { display: block; font-size: 0.84rem; color: var(--text-main); overflow-wrap: anywhere; }
+.lm__supplier small { font-size: 0.72rem; color: var(--text-muted); overflow-wrap: anywhere; }
 
-/* ── Content ── */
-.lm__content { padding: 1rem 1.6rem 1.6rem; display: flex; flex-direction: column; gap: 0.75rem; }
-
-.lm-card {
-  background: var(--surface, #fff);
-  border: 1px solid var(--border, #e2e8f0);
-  border-radius: 12px;
-  padding: 0.9rem 1.1rem;
-  transition: box-shadow 0.15s;
-}
-.lm-card:hover { box-shadow: 0 2px 8px rgba(0,0,0,0.05); }
-.lm-card__head {
+/* ── Action bar: Sell / Resupply, pinned below the scrolling body ────────── */
+.lm__footer-bar {
+  flex: 0 0 auto;
+  z-index: 15;
   display: flex; align-items: center; gap: 0.5rem;
-  margin-bottom: 0.5rem;
+  padding: 0.6rem 0.7rem calc(0.6rem + env(safe-area-inset-bottom, 0px));
+  background: var(--surface);
+  border-top: 1px solid var(--border);
+  box-shadow: 0 -6px 18px -14px rgba(15, 23, 42, 0.45);
 }
-.lm-card__icon {
-  display: flex; align-items: center; justify-content: center;
-  width: 28px; height: 28px; border-radius: 8px;
-  background: var(--accent-subtle, #eef4ff); color: var(--primary, #2563eb);
-  flex-shrink: 0;
+.lm__footer-bar .btn {
+  flex: 1 1 0;
+  min-width: 0;
+  min-height: 46px;                 /* comfortable touch target */
+  padding: 0.5rem 0.7rem;
+  font-size: 0.9rem;
 }
-.lm-card__title { font-size: 0.82rem; font-weight: 700; color: var(--text-main, #1e293b); }
-.lm-card__body { font-size: 0.86rem; line-height: 1.6; color: var(--text-secondary, #475569); }
-.lm-card__body p { margin: 0 0 0.4rem; }
-.lm-card__body p:last-child { margin-bottom: 0; }
+/* ══════════════════════════════════════════════════════════════════════════
+   RESPONSIVE TIERS
+   ══════════════════════════════════════════════════════════════════════════ */
 
-.lm-card--red .lm-card__icon { background: rgba(239, 68, 68, 0.1); color: #dc2626; }
-.lm-card--green .lm-card__icon { background: rgba(22, 163, 74, 0.1); color: #16a34a; }
-.lm-card--amber .lm-card__icon { background: rgba(234, 179, 8, 0.1); color: #ca8a04; }
-.lm-card--purple .lm-card__icon { background: rgba(139, 92, 246, 0.1); color: #7c3aed; }
-
-@media (max-width: 700px) {
-  .lm__top { grid-template-columns: 1fr; gap: 1rem; padding: 1.3rem 1.2rem 1.1rem; }
-  .lm__cover-wrap { padding-top: 0; }
-  .lm__cover { width: 132px; height: 132px; }
-  .lm__cover-blob { width: 104px; height: 104px; }
-  .lm__main { text-align: center; }
-  .lm__hero-tags { justify-content: center; }
-  .lm__featured-hint { display: none; }
+/* ── Phone (≤ 480px): compact native app — [✏ Edit] [⋮ More] ────────────── */
+@media (max-width: 480px) {
+  .lm__topbar { gap: 0.3rem 0.4rem; padding: 0.5rem 0.65rem; }
+  .lm__back-label { display: inline; }
+  .lm__status-badge { font-size: 0.65rem; padding: 0.18rem 0.5rem; }
+  /* The action buttons drop to their own header row so nothing is cramped */
+  .lm__actions { width: 100%; justify-content: flex-end; }
+  .lm__quick-edit { display: inline-flex; }
+  .lm__icon-gear { display: none; }
+  .lm__icon-more { display: block; }
+  /* Edit lives in its own button on phones, so the overflow menu stays clean */
+  .lm__actions-menu .lm__menu-edit { display: none; }
+  .lm__detail-title { font-size: 1.35rem; }
 }
 
-@media (max-width: 520px) {
-  .lm__stats-bar { grid-template-columns: repeat(2, 1fr); }
-  .lm-stat { border-bottom: 1px solid var(--border, #e2e8f0); }
-  .lm-stat:nth-child(2) { border-right: none; }
-  .lm__content { padding: 1rem; }
-  .lm__details-row { grid-template-columns: 1fr; gap: 0.1rem; }
-  .lm__main-title { font-size: 1.35rem; }
+/* ── Large mobile (481 – 599px): same single column, a little more air ──── */
+@media (min-width: 481px) {
+  .lm__topbar { padding: 0.6rem 1rem; }
+  .lm__detail-grid { gap: 1.1rem; padding: 1.05rem 1.05rem 1.75rem; }
+  .lm__detail-cover { width: clamp(150px, 34vw, 180px); }
+  .lm__detail-title { font-size: 1.5rem; }
+  .lm__footer-bar { padding: 0.7rem 1rem calc(0.7rem + env(safe-area-inset-bottom, 0px)); }
 }
+
+/* ── Tablet (600 – 1024px): image beside the identity, wide card grid ──── */
+@media (min-width: 600px) {
+  .lm__hero { flex-direction: row; align-items: center; gap: 1.35rem; }
+  .lm__detail-cover-wrap { width: auto; flex: 0 0 auto; }
+  .lm__detail-cover { width: clamp(180px, 28vw, 240px); }
+  .lm__detail-main { text-align: left; }
+  .lm__hero-tags { justify-content: flex-start; }
+  .lm__detail-title { font-size: 1.6rem; }
+  .lm__quick-stats { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .lm__stats-bar { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+  .lm__extra-grid { grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); }
+  .lm__details-row { grid-template-columns: minmax(0, 150px) minmax(0, 1fr); gap: 0.75rem; }
+  /* Pronunciation becomes one inline line per language */
+  .lm__pron-row {
+    grid-template-columns: auto minmax(0, 1fr) auto;
+    grid-template-areas: "lang text speaker";
+  }
+}
+
+/* ── Tablet shell (768 – 1024px): a centred card, not a full-screen sheet ─ */
+@media (min-width: 768px) {
+  .modal-overlay:has(> .lm) { align-items: center; padding: 1.25rem; }
+  .lm {
+    width: min(1024px, 100%);
+    min-height: 0;
+    max-height: calc(100vh - 2.5rem);
+    max-height: calc(100dvh - 2.5rem);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xl);
+    box-shadow: var(--shadow-xl);
+  }
+  .lm__detail-grid { gap: 1.25rem; padding: 1.35rem 1.4rem 1.9rem; }
+  .lm__detail-title { font-size: 1.7rem; }
+  .lm__bincard { padding: 1rem 1.1rem; }
+  /* Information cards sit side by side instead of one long phone-style list */
+  .lm__accordion { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.6rem; }
+}
+
+/* ── Desktop (≥ 1025px): hero column + information column ──────────────── */
+@media (min-width: 1025px) {
+  .lm--details { width: min(1100px, 100%); }
+  .lm__detail-grid {
+    grid-template-columns: minmax(0, 340px) minmax(0, 1fr);
+    grid-template-areas:
+      "hero    info"
+      "bincard bincard"
+      "extra   extra";
+    align-content: start;
+    gap: 1.35rem 1.75rem;
+    padding: 1.5rem 1.75rem 1.9rem;
+  }
+  .lm__hero { grid-area: hero; flex-direction: column; align-items: center; }
+  .lm__info { grid-area: info; }
+  .lm__bincard { grid-area: bincard; }
+  .lm__extra-grid { grid-area: extra; }
+  /* Desktop keeps the original hero-column look: the Bin Card carries the
+     stock figures, so the phone/tablet stat strip is not repeated here. */
+  .lm__quick-stats { display: none; }
+  .lm__detail-main, .lm__hero-tags { text-align: center; justify-content: center; }
+  .lm__detail-cover { width: clamp(200px, 17vw, 240px); }
+  .lm__detail-title { font-size: 1.6rem; }
+  .lm__accordion { grid-template-columns: minmax(0, 1fr); gap: 0.5rem; }
+  .lm__footer-bar { justify-content: flex-end; padding: 0.85rem 1.75rem; }
+  .lm__footer-bar .btn { flex: 0 0 auto; min-width: 160px; }
+}
+
+
+
+
+
+

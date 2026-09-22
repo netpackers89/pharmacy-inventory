@@ -75,7 +75,8 @@ img, video, svg { max-width: 100%; }
   flex-direction: column;
   min-width: 0;
   max-width: 100%;
-  overflow-x: hidden;
+  /* NOTE: overflow-x hidden is intentionally NOT set here — it would create
+     a clipping context that breaks position:sticky on the child header. */
   background-color: var(--bg-main);
 }
 
@@ -644,6 +645,86 @@ select.form-control option { background: var(--surface); color: var(--text-main)
 .smart-search-input-wrap input::placeholder { color: var(--text-faint); }
 
 /* ===================================================
+   SALES ANALYTICS CHART (shared: Dashboard + Reports)
+   =================================================== */
+.sales-analytics { width: 100%; min-width: 0; }
+.sales-analytics__head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.85rem;
+}
+.sales-range-toggle {
+  display: inline-flex;
+  gap: 0.15rem;
+  padding: 0.18rem;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+  flex-shrink: 0;
+}
+.sales-range-btn {
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  color: var(--text-muted);
+  padding: 0.3rem 0.7rem;
+  border-radius: 999px;
+  cursor: pointer;
+  transition: background var(--transition-fast), color var(--transition-fast);
+  white-space: nowrap;
+}
+.sales-range-btn:hover { color: var(--text-main); }
+.sales-range-btn.active {
+  background: var(--primary);
+  color: var(--primary-text);
+}
+.sales-analytics__totals {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.6rem;
+}
+.sales-analytics__revenue {
+  display: block;
+  font-size: clamp(1.15rem, 3vw, 1.5rem);
+  font-weight: 800;
+  letter-spacing: -0.02em;
+  color: var(--text-main);
+  overflow-wrap: anywhere;
+}
+.sales-analytics__meta {
+  display: block;
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 2px;
+}
+.sales-growth-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.72rem;
+  font-weight: 800;
+  padding: 0.25rem 0.6rem;
+  border-radius: 999px;
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+.sales-growth-chip.is-up { background: var(--success-bg); color: var(--success); }
+.sales-growth-chip.is-down { background: var(--danger-bg); color: var(--danger); }
+.sales-analytics__skeleton {
+  border-radius: var(--radius-md);
+  background: var(--surface-alt);
+}
+
+/* ===================================================
    DASHBOARD GRID & STAT CARDS
    =================================================== */
 .dashboard-grid {
@@ -846,7 +927,8 @@ select.form-control option { background: var(--surface); color: var(--text-main)
 @media (min-width: 640px) {
   .content-area { padding: 1.5rem; }
   .form-grid { grid-template-columns: repeat(2, 1fr); }
-  .dashboard-grid { grid-template-columns: repeat(2, 1fr); }
+  /* Three stat cards share one aligned row on tablets (no dangling half card) */
+  .dashboard-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
 
   .modal-overlay { align-items: center; padding: 1.25rem; }
   .modal-card {
@@ -877,12 +959,15 @@ select.form-control option { background: var(--surface); color: var(--text-main)
    =================================================== */
 @media (max-width: 640px) {
   /* Stat cards keep TWO columns on phones (compact type), and the
-     overflow-wrap guards below keep large ETB amounts from overflowing. */
+     overflow-wrap guards below keep large ETB amounts from overflowing.
+     The third card (Inventory Alerts) spans the full width so it looks
+     deliberate instead of dangling in a half-width column. */
   .dashboard-grid {
     grid-template-columns: repeat(2, minmax(0, 1fr)) !important;
     gap: 0.6rem;
   }
   .dashboard-grid > * { min-width: 0; }
+  .dashboard-grid > *:nth-child(3) { grid-column: 1 / -1; }
 
   /* Compact numeric type in stat cards so two columns stay readable */
   .dashboard-grid .stat-value,

@@ -1682,6 +1682,7 @@ const AuditPanel = () => {
   const [statusFilter, setStatusFilter] = useState("");
   const [userFilter, setUserFilter] = useState("");
   const [meta, setMeta] = useState({ actions: [], modules: [] });
+  const [archiveInfo, setArchiveInfo] = useState(null);
 
   const activeFilters = {
     from: dateFrom || undefined,
@@ -1706,6 +1707,25 @@ const AuditPanel = () => {
   useEffect(() => {
     loadFilters();
   }, []);
+
+  const loadArchives = () => {
+    import("../services/api").then(({ default: api }) => {
+      api.get("/audit-logs/archives").then((r) => setArchiveInfo(r.data)).catch(() => setArchiveInfo(null));
+    });
+  };
+  useEffect(() => { loadArchives(); }, []);
+
+  const downloadArchive = (job) => {
+    import("../services/api").then(({ default: api }) => {
+      api.get(`/audit-logs/archives/${job.archive_job_id}/download`, { responseType: "blob" })
+        .then((response) => {
+          const url = URL.createObjectURL(response.data);
+          const link = document.createElement("a");
+          link.href = url; link.download = job.file_name || "pharmacy_audit_archive.xlsx";
+          link.click(); URL.revokeObjectURL(url);
+        });
+    });
+  };
 
   const load = (pageNum = page, pageLimit = limit) => {
     setLoading(true);
@@ -1757,6 +1777,36 @@ const AuditPanel = () => {
           Export CSV
         </button>
       </div>
+
+      <section className="settings-card" style={{ marginBottom: "1rem", padding: "1rem" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", gap: "1rem", alignItems: "center", flexWrap: "wrap" }}>
+          <div>
+            <h3 style={{ margin: 0 }}>Audit Archive</h3>
+            <p style={{ margin: "0.3rem 0 0", color: "var(--text-muted)", fontSize: "0.82rem" }}>
+              Audit logs are retained for {archiveInfo?.retentionMonths || 2} months. Download and store verified archives securely; operational data is never included.
+            </p>
+          </div>
+          <button type="button" className="btn btn-secondary btn-sm" onClick={loadArchives}>Refresh archive status</button>
+        </div>
+        {archiveInfo && (
+          <>
+            {archiveInfo.storage && (
+              <p style={{ margin: "0.8rem 0", fontSize: "0.84rem" }}>
+                Database storage <strong>(application-estimated)</strong>: {(archiveInfo.storage.usedBytes / 1048576).toFixed(1)} MB / {archiveInfo.storage.limitMb} MB · {(archiveInfo.storage.availableBytes / 1048576).toFixed(1)} MB available.
+              </p>
+            )}
+            <p style={{ margin: "0.8rem 0", fontSize: "0.84rem" }}>
+              Upcoming cleanup: <strong>{archiveInfo.eligibleRecords || 0}</strong> eligible audit record{archiveInfo.eligibleRecords === 1 ? "" : "s"} before {new Date(archiveInfo.nextCutoff).toLocaleDateString()}.
+            </p>
+            {(archiveInfo.jobs || []).slice(0, 5).map((job) => (
+              <div key={job.archive_job_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", borderTop: "1px solid var(--border)", padding: "0.55rem 0", fontSize: "0.82rem" }}>
+                <span>{new Date(job.period_start).toLocaleDateString()} – {new Date(job.period_end).toLocaleDateString()} · {job.record_count} records · <strong>{job.status}</strong></span>
+                {job.file_name && ["VERIFIED", "DELETED"].includes(job.status) && <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadArchive(job)}>Download Excel</button>}
+              </div>
+            ))}
+          </>
+        )}
+      </section>
 
       {/* Filters */}
       <div className="audit-filters">

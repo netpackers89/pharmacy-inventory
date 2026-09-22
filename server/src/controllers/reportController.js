@@ -69,6 +69,112 @@ exports.getOverview = async (req, res) => {
   }
 };
 
+// ─── SALES TIME SERIES (Day / Week / Month / Year) ────────────────────────────
+// Buckets completed sales into a revenue time series for the dashboard and
+// reports charts, plus a previous-period comparison so the UI can show growth.
+// All amounts are ETB (the pharmacy currency).
+exports.getSalesSeries = async (req, res) => {
+  try {
+    const range = ['day', 'week', 'month', 'year'].includes(String(req.query.range || '').toLowerCase())
+      ? String(req.query.range).toLowerCase()
+      : 'week';
+
+    const now = new Date();
+    const start = new Date();
+    const prevStart = new Date();
+
+    if (range === 'day') {
+      start.setHours(0, 0, 0, 0);
+      prevStart.setDate(prevStart.getDate() - 1);
+      prevStart.setHours(0, 0, 0, 0);
+    } else if (range === 'week') {
+      start.setDate(start.getDate() - 6); start.setHours(0, 0, 0, 0);
+      prevStart.setDate(prevStart.getDate() - 13); prevStart.setHours(0, 0, 0, 0);
+    } else if (range === 'month') {
+      start.setDate(start.getDate() - 29); start.setHours(0, 0, 0, 0);
+      prevStart.setDate(prevStart.getDate() - 59); prevStart.setHours(0, 0, 0, 0);
+    } else {
+      start.setMonth(start.getMonth() - 11); start.setDate(1); start.setHours(0, 0, 0, 0);
+      prevStart.setMonth(prevStart.getMonth() - 23); prevStart.setDate(1); prevStart.setHours(0, 0, 0, 0);
+    }
+
+    const bucket = range === 'day' ? 'hour' : range === 'year' ? 'month' : 'day';
+
+    const seriesRes = await db.query(
+      `SELECT date_trunc($1, s.sale_date) AS bucket,
+              COUNT(*)::int AS transactions,
+              COALESCE(SUM(s.total_amount), 0) AS revenue
+       FROM sales s
+       WHERE s.status = 'COMPLETED' AND s.sale_date >= $2
+       GROUP BY 1`,
+      [bucket, start.toISOString()]
+    );
+
+    const unitsRes = await db.query(
+      `SELECT COALESCE(SUM(si.quantity), 0)::int AS units
+       FROM sale_items si
+       JOIN sales s ON si.sale_id = s.sale_id
+       WHERE s.status = 'COMPLETED' AND s.sale_date >= $1`,
+      [start.toISOString()]
+    );
+
+    const prevRes = await db.query(
+      `SELECT COALESCE(SUM(s.total_amount), 0) AS revenue, COUNT(*)::int AS transactions
+       FROM sales s
+       WHERE s.status = 'COMPLETED' AND s.sale_date >= $1 AND s.sale_date < $2`,
+      [prevStart.toISOString(), start.toISOString()]
+    );
+
+    /* Build every expected bucket (fills zero-sale periods) */
+    const byBucket = new Map(seriesRes.rows.map((r) => [Number(new Date(r.bucket)), r]));
+    const series = [];
+    const cursor = new Date(start);
+    while (cursor <= now && series.length < 400) {
+      const key = (() => {
+        const c = new Date(cursor);
+        if (bucket === 'hour') { c.setMinutes(0, 0, 0); return Number(c); }
+        if (bucket === 'day') { c.setHours(0, 0, 0, 0); return Number(c); }
+        c.setDate(1); c.setHours(0, 0, 0, 0); return Number(c);
+      })();
+      const row = byBucket.get(key) || {};
+      let label;
+      if (range === 'day') label = `${cursor.getHours()}:00`;
+      else if (range === 'week') label = cursor.toLocaleDateString('en-GB', { weekday: 'short' });
+      else if (range === 'month') label = cursor.toLocaleDateString('en-GB', { day: 'numeric', month: 'short' });
+      else label = cursor.toLocaleDateString('en-GB', { month: 'short', year: '2-digit' });
+
+      series.push({
+        label,
+        revenue: Math.round((parseFloat(row.revenue) || 0) * 100) / 100,
+        transactions: row.transactions || 0,
+      });
+
+      if (range === 'day') cursor.setHours(cursor.getHours() + 1);
+      else if (range === 'year') cursor.setMonth(cursor.getMonth() + 1), cursor.setDate(1), cursor.setHours(0, 0, 0, 0);
+      else cursor.setDate(cursor.getDate() + 1), cursor.setHours(0, 0, 0, 0);
+    }
+
+    const revenue = series.reduce((s, p) => s + p.revenue, 0);
+    const transactions = series.reduce((s, p) => s + p.transactions, 0);
+    const prevRevenue = parseFloat(prevRes.rows[0]?.revenue) || 0;
+
+    res.json({
+      range,
+      series,
+      summary: {
+        revenue,
+        transactions,
+        units_sold: parseInt(unitsRes.rows[0]?.units) || 0,
+        prev_revenue: prevRevenue,
+        growth_pct: prevRevenue > 0 ? Math.round(((revenue - prevRevenue) / prevRevenue) * 1000) / 10 : null,
+      },
+    });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Failed to build sales series' });
+  }
+};
+
 // ─── SALES REPORT ─────────────────────────────────────────────────────────────
 exports.getSalesReport = async (req, res) => {
   try {

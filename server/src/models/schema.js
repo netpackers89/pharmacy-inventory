@@ -231,6 +231,14 @@ async function initSchema() {
     await db.query(`ALTER TABLE medicines ADD COLUMN counseling_points TEXT`);
   } catch (err) {}
 
+  // Optional pronunciation guides (never required — nullable by design)
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN pronunciation_english TEXT`);
+  } catch (err) {}
+  try {
+    await db.query(`ALTER TABLE medicines ADD COLUMN pronunciation_amharic TEXT`);
+  } catch (err) {}
+
   // Base tables used by controllers/import (idempotent for fresh installs)
   try {
     await db.query(`CREATE TABLE IF NOT EXISTS categories (

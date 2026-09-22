@@ -4,17 +4,11 @@ import {
   DollarSign, Users, AlertTriangle, TrendingUp,
   ChevronRight, ChevronLeft, ArrowUpRight, Package, Truck
 } from 'lucide-react';
-import { LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer } from 'recharts';
 import { salesAPI, inventoryAPI, usersAPI } from '../services/api';
+import { SalesAnalytics } from '../components/SalesAnalytics';
 import { socket } from '../services/socket';
 import { useTheme } from '../context/ThemeContext';
 import { SkeletonCards } from '../components/Feedback';
-
-const EMPTY_CHART = [
-  { day: 'Mon', sales: 0 }, { day: 'Tue', sales: 0 }, { day: 'Wed', sales: 0 },
-  { day: 'Thu', sales: 0 }, { day: 'Fri', sales: 0 }, { day: 'Sat', sales: 0 },
-  { day: 'Sun', sales: 0 },
-];
 
 export const Dashboard = ({ onNavigate }) => {
   const { theme } = useTheme();
@@ -25,18 +19,11 @@ export const Dashboard = ({ onNavigate }) => {
   const [alertsData, setAlertsData] = useState({ nearExpiryItems: [], outOfStockItems: [] });
   const [fastMoving, setFastMoving] = useState([]);
   const [fastIndex, setFastIndex] = useState(0);
-  const [chartData, setChartData] = useState(EMPTY_CHART);
-
-  /* Chart palette follows the active theme */
-  const axisColor = theme === 'dark' ? '#8b95a7' : '#64748b';
-  const gridColor = theme === 'dark' ? '#232833' : '#eef0f4';
+  const [refreshTick, setRefreshTick] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
 
-    salesAPI.getDashboardStats()
-      .then(res => { if (!cancelled) setChartData(res.data?.chartData || EMPTY_CHART); })
-      .catch(() => {});
     salesAPI.getAll()
       .then(res => { if (!cancelled) setRevenue(res.data?.total_revenue ?? '0.00'); })
       .catch(() => { if (!cancelled) setRevenue('0.00'); });
@@ -58,7 +45,7 @@ export const Dashboard = ({ onNavigate }) => {
       .catch(() => { if (!cancelled) setAlertsLoaded(true); });
 
     const refresh = () => {
-      salesAPI.getDashboardStats().then(res => setChartData(res.data?.chartData || EMPTY_CHART)).catch(() => {});
+      setRefreshTick((t) => t + 1);
       salesAPI.getAll().then(res => setRevenue(res.data?.total_revenue ?? '0.00')).catch(() => {});
       inventoryAPI.getAlerts().then(res => {
         const data = res.data || {};
@@ -166,36 +153,9 @@ export const Dashboard = ({ onNavigate }) => {
 
       {/* ── CHART + FAST MOVING ── */}
       <div className="dash-main-grid" style={{ marginBottom: '1.25rem' }}>
-        {/* Weekly sales chart */}
+        {/* Sales analytics: Day / Week / Month / Year revenue (ETB) */}
         <div className="dash-panel">
-          <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-            <div>
-              <h3 className="dash-panel-title">Weekly Sales</h3>
-              <p className="dash-panel-sub">Daily revenue tracking</p>
-            </div>
-            <span className="badge badge-neutral">7-Day</span>
-          </div>
-          <div style={{ width: '100%', height: '200px' }}>
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={chartData} margin={{ top: 5, right: 10, left: -20, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke={gridColor} vertical={false} />
-                <XAxis dataKey="day" stroke={axisColor} fontSize={11} tickLine={false} axisLine={false} />
-                <YAxis stroke={axisColor} fontSize={11} tickLine={false} axisLine={false} />
-                <Tooltip
-                  cursor={{ stroke: gridColor }}
-                  contentStyle={{
-                    backgroundColor: theme === 'dark' ? '#1d2128' : '#16181d',
-                    borderRadius: '10px',
-                    border: 'none',
-                    color: '#f2f4f8',
-                    fontSize: '0.78rem',
-                  }}
-                  formatter={val => [`ETB ${val}`, 'Sales']}
-                />
-                <Line type="monotone" dataKey="sales" stroke={theme === 'dark' ? '#f2f4f8' : '#16181d'} strokeWidth={2.4} dot={{ r: 3, strokeWidth: 0, fill: theme === 'dark' ? '#f2f4f8' : '#16181d' }} activeDot={{ r: 5 }} />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+          <SalesAnalytics height={210} refreshSignal={refreshTick} />
         </div>
 
         {/* Fast moving */}

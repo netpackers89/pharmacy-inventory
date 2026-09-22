@@ -76,6 +76,45 @@
 .pos-result-item:last-child { border-bottom: none; }
 .pos-result-item:hover { background: var(--surface-hover); }
 
+/* Medicine image thumbnail in search results */
+.pos-result-thumb {
+  width: 38px;
+  height: 38px;
+  flex-shrink: 0;
+  border-radius: 10px;
+  overflow: hidden;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+.pos-result-thumb .medicine-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+/* Medicine image thumbnail on cart item cards */
+.pos-item-thumb {
+  width: 46px;
+  height: 46px;
+  flex-shrink: 0;
+  border-radius: 12px;
+  overflow: hidden;
+  background: var(--surface-alt);
+  border: 1px solid var(--border);
+}
+.pos-item-thumb .medicine-image {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+@media (max-width: 640px) {
+  .pos-item-thumb { width: 38px; height: 38px; border-radius: 10px; }
+  .pos-result-thumb { width: 32px; height: 32px; border-radius: 8px; }
+}
+
+.pos-result-name { flex: 1; min-width: 0; }
 .pos-result-name strong { display: block; font-size: 0.9rem; }
 .pos-result-name small { display: block; font-size: 0.75rem; color: var(--text-muted); margin-top: 3px; }
 .pos-result-price { white-space: nowrap; font-size: 0.85rem; }
@@ -439,6 +478,7 @@
   background: var(--surface-alt);
   flex-wrap: wrap;
 }
+.pos-item-head .pos-item-title { flex: 1; min-width: 0; }
 .pos-item-title { min-width: 0; flex: 1; }
 .pos-item-title strong {
   display: block;
@@ -446,6 +486,67 @@
   overflow-wrap: anywhere;
 }
 .pos-item-title .muted-line { margin-top: 2px; overflow-wrap: anywhere; }
+
+/* ── Identification block: the EXACT medicine added to this sale ── */
+.pos-item-card.is-new {
+  border-color: var(--info-border);
+  box-shadow: 0 0 0 2px var(--info-bg), var(--shadow-md);
+  animation: posItemIn 0.4s ease;
+}
+.pos-item-card.is-new .pos-item-head {
+  background: linear-gradient(90deg, var(--info-bg), var(--surface-alt));
+}
+@keyframes posItemIn {
+  from { transform: translateY(-6px); opacity: 0.45; }
+  to   { transform: translateY(0);    opacity: 1; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pos-item-card.is-new { animation: none; }
+}
+
+.pos-just-added {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.6rem;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  background: var(--info);
+  color: #fff;
+  padding: 0.16rem 0.5rem;
+  border-radius: 999px;
+  margin-bottom: 0.35rem;
+}
+
+.pos-ident-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+  margin-top: 0.5rem;
+}
+.pos-ident-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1;
+  padding: 0.3rem 0.5rem;
+  border-radius: 999px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+.pos-ident-chip.warn { background: var(--warning-bg); border-color: var(--warning-border); color: var(--warning); }
+.pos-ident-chip.danger { background: var(--danger-bg); border-color: var(--danger-border); color: var(--danger); }
+.pos-ident-chip.price {
+  background: var(--success-bg);
+  border-color: var(--success-border);
+  color: var(--success);
+  font-variant-numeric: tabular-nums;
+}
 
 .pos-item-head-right {
   display: flex;

@@ -4,6 +4,7 @@ import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend
 } from 'recharts';
 import { reportsAPI } from '../services/api';
+import { SalesAnalytics } from '../components/SalesAnalytics';
 import { useAuth } from '../context/AuthContext';
 import { Pagination } from '../components/ui';
 import {
@@ -205,6 +206,10 @@ const SalesTab = ({ from, to }) => {
 
   return (
     <div>
+      {/* Revenue trend: Day / Week / Month / Year comparison (ETB) */}
+      <div className="report-card" style={{ marginBottom: '1.25rem' }}>
+        <SalesAnalytics height={240} />
+      </div>
       <div className="kpi-grid">
         <KPICard icon={<DollarSign size={20}/>} label="Total Revenue" value={`ETB ${fmt(summary.total_revenue)}`} />
         <KPICard icon={<ShoppingBag size={20}/>} label="Transactions" value={summary.transactions?.toString()} />

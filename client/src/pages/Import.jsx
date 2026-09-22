@@ -242,6 +242,8 @@ export const Import = () => {
         side_effects: 'Side Effects',
         warnings: 'Warnings',
         storage_conditions: 'Storage Conditions',
+        pronunciation_english: 'English Pronunciation',
+        pronunciation_amharic: 'Amharic Pronunciation',
         batch_number: 'Batch Number *',
         expiry_date: 'Expiry Date *',
         quantity: 'Units Received *',
@@ -599,7 +601,7 @@ export const Import = () => {
                 )}
                 <div className="form-grid">
                   {(mode === 'medicine'
-                    ? ['generic_name', 'brand_name', 'strength', 'mass', 'mass_unit', 'dosage_form', 'route', 'manufacturer', 'country', 'image_url', 'category', 'subcategory', 'description', 'indications', 'contraindications', 'side_effects', 'warnings', 'storage_conditions']
+                    ? ['generic_name', 'brand_name', 'strength', 'mass', 'mass_unit', 'dosage_form', 'route', 'manufacturer', 'country', 'image_url', 'category', 'subcategory', 'description', 'indications', 'contraindications', 'side_effects', 'warnings', 'storage_conditions', 'pronunciation_english', 'pronunciation_amharic']
                     : ['generic_name', 'brand_name', 'strength', 'batch_number', 'expiry_date', 'packaging_unit', 'units_per_package', 'quantity', 'buy_price', 'sell_price', 'supplier', 'barcode', 'qr_code', 'abc_category', 'ven_category']
                   ).map((f) => (
                     <div className="form-group" key={f}>
