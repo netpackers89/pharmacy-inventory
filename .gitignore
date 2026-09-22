@@ -15,7 +15,10 @@ frontend/.env
 *.log
 .DS_Store
 .vscode/
- 
+
+NETpharmacyApp/
+
+ NETpharmacyApp/
  node_modules/
 .env
 .env.local
