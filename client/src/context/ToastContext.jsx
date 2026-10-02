@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useCallback, useRef } from 'react';
 import { CheckCircle, XCircle, AlertTriangle, Info, X, Loader } from 'lucide-react';
+import { playSound, soundForToast } from '../services/sound';
 import './Toast.css';
 
 const ToastContext = createContext();
@@ -27,6 +28,16 @@ export const ToastProvider = ({ children }) => {
   const addToast = useCallback((type, message, duration = 4000) => {
     const id = ++toastId;
     setToasts(prev => [...prev, { id, type, message, exiting: false }]);
+    /*
+     * SOUND — every meaningful notification in the app funnels through this
+     * one function, so this is the single correct place to play a sound.
+     * `soundForToast` maps success -> chime, warning/error -> their own tones
+     * and deliberately returns null for 'info', so purely informational
+     * messages stay silent. playSound() itself handles the autoplay policy,
+     * the duplicate/stacking guards and load failures.
+     */
+    const sound = soundForToast(type);
+    if (sound) playSound(sound, { dedupeKey: `${type}:${message}` });
     if (duration > 0) {
       setTimeout(() => removeToast(id), duration);
     }

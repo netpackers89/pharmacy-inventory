@@ -7,7 +7,7 @@ const { emitDataUpdated } = require('../socket');
  * One unified workflow for Batch + Resupply importing (CSV / JSON rows).
  * The row itself decides what it does:
  *
- *   New medicine identity        -> medicine is created
+ *   New medicine identity        -> blocked until explicitly mapped/approved
  *   Existing medicine identity   -> resupply: new batch / stock increase
  *   Existing batch number        -> duplicate (stock increase on same batch)
  *
@@ -83,6 +83,8 @@ const FIELD_ALIASES = {
   qr_code: ['qr_code', 'qr code', 'qr'],
   abc_category: ['abc_category', 'abc category', 'abc'],
   ven_category: ['ven_category', 'ven category', 'ven'],
+  mapped_medicine_id: ['mapped_medicine_id', 'mapped medicine id'],
+  create_medicine: ['create_medicine', 'create medicine'],
 };
 
 const normalizeHeader = (value) => String(value ?? '')
@@ -252,9 +254,13 @@ exports.previewImport = async (rows, mode = 'batch') => {
       }
     }
 
+    // A resupply file must never silently expand the medicine master list.
+    // The UI may map this row to an existing medicine or explicitly approve
+    // creation; either choice is re-checked by confirmImport below.
     let status = 'ready';
     if (issues.length > 0) status = 'error';
     else if (supplierIssue) status = 'supplier_issue';
+    else if (mode !== 'medicine' && !medicine_id) status = 'not_found';
     else if (duplicate || repeatedInFile) status = 'duplicate';
 
     preview.push({
@@ -271,7 +277,7 @@ exports.previewImport = async (rows, mode = 'batch') => {
       issues,
       status,
       decision: !medicine_id
-        ? 'new_medicine_new_batch'
+        ? (mode === 'medicine' ? 'new_medicine' : 'medicine_not_found')
         : duplicate
           ? 'existing_medicine_existing_batch'
           : 'existing_medicine_new_batch',
@@ -421,9 +427,19 @@ exports.confirmImport = async (rows, userId, mode = 'batch') => {
         throw new Error(`Supplier could not be resolved for batch ${row.batch_number || '(unnamed)'}.`);
       }
 
-      /* Medicine: match by identity, or create. */
+      /* Medicine: resupply imports only use an existing mapped medicine unless
+         the pharmacist explicitly chose Create Medicine in the preview. */
       let medicine_id = medIndex.get(key) || null;
+      const explicitlyMappedId = Number(row.mapped_medicine_id) || null;
+      if (!medicine_id && explicitlyMappedId) {
+        const mapped = await client.query('SELECT medicine_id FROM medicines WHERE medicine_id = $1', [explicitlyMappedId]);
+        if (!mapped.rows.length) throw new Error(`Mapped medicine does not exist for batch ${row.batch_number || '(unnamed)'}.`);
+        medicine_id = mapped.rows[0].medicine_id;
+      }
       if (!medicine_id) {
+        if (String(row.create_medicine).toLowerCase() !== 'true') {
+          throw new Error(`Medicine not found for ${row.generic_name || 'this row'}. Map it to an existing medicine or explicitly choose Create Medicine before importing.`);
+        }
         // Resolve category / subcategory by name (silently skipped if unknown).
         let category_id = null;
         let sub_category_id = null;

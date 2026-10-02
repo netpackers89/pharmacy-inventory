@@ -138,22 +138,9 @@ async function archiveEligibleAuditLogs() {
       job.status = 'VERIFIED';
     }
 
-    if (job.status === 'VERIFIED') {
-      let deleted = 0;
-      while (true) {
-        const result = await client.query(
-          `DELETE FROM audit_logs WHERE audit_id IN (
-             SELECT audit_id FROM audit_logs WHERE archive_job_id=$1 AND created_at < $2 LIMIT $3
-           ) RETURNING audit_id`, [job.archive_job_id, periodEnd, DELETE_BATCH_SIZE]
-        );
-        deleted += result.rowCount;
-        if (result.rowCount < DELETE_BATCH_SIZE) break;
-      }
-      await client.query("UPDATE audit_archive_jobs SET status='DELETED', deleted_at=NOW(), notification_status='READY' WHERE archive_job_id=$1", [job.archive_job_id]);
-      // Normal VACUUM is deliberately left to PostgreSQL autovacuum: it cannot
-      // run inside a transaction and VACUUM FULL is never automatic.
-      return { success: true, deleted, jobId: job.archive_job_id };
-    }
+    // VERIFIED means exported and integrity-checked only. Deletion is a
+    // separate, explicit action guarded by two administrator acknowledgements.
+    return { success: true, pendingApproval: job.status === 'VERIFIED', jobId: job.archive_job_id };
   } catch (error) {
     console.error('[AUDIT_ARCHIVE]', error.message);
     try { await client.query("UPDATE audit_archive_jobs SET status='FAILED', failure_reason=$1 WHERE period_key=$2 AND status <> 'DELETED'", [error.message, archiveWindow().periodKey]); } catch (_) {}
@@ -168,7 +155,11 @@ async function getArchiveOverview() {
   const { periodEnd } = archiveWindow();
   const [eligible, jobs, databaseSize, largestTables] = await Promise.all([
     db.query('SELECT COUNT(*)::int AS count FROM audit_logs WHERE created_at < $1 AND archive_job_id IS NULL', [periodEnd]),
-    db.query('SELECT * FROM audit_archive_jobs ORDER BY created_at DESC LIMIT 24'),
+    db.query(`SELECT j.*, COALESCE(a.approval_count, 0)::int AS approval_count
+              FROM audit_archive_jobs j
+              LEFT JOIN (SELECT archive_job_id, COUNT(*) AS approval_count FROM audit_archive_approvals GROUP BY archive_job_id) a
+                ON a.archive_job_id = j.archive_job_id
+              ORDER BY j.created_at DESC LIMIT 24`),
     db.query('SELECT pg_database_size(current_database())::bigint AS bytes'),
     db.query(`SELECT relname AS name, pg_total_relation_size(oid)::bigint AS bytes
               FROM pg_class WHERE relkind = 'r' AND relnamespace = 'public'::regnamespace
@@ -182,6 +173,39 @@ async function getArchiveOverview() {
   };
 }
 
+async function acknowledgeArchive(jobId, userId) {
+  const result = await db.query(`
+    INSERT INTO audit_archive_approvals (archive_job_id, user_id)
+    SELECT j.archive_job_id, $2 FROM audit_archive_jobs j
+    JOIN users u ON u.user_id = $2
+    WHERE j.archive_job_id = $1 AND j.status = 'VERIFIED' AND UPPER(u.role) = 'ADMIN' AND COALESCE(u.status, 'ACTIVE') = 'ACTIVE'
+    ON CONFLICT (archive_job_id, user_id) DO NOTHING
+    RETURNING archive_job_id
+  `, [jobId, userId]);
+  if (!result.rows.length) throw new Error('Only an active administrator may acknowledge a verified archive.');
+  return db.query('SELECT COUNT(*)::int AS count FROM audit_archive_approvals WHERE archive_job_id=$1', [jobId]);
+}
+
+async function cleanupApprovedArchive(jobId) {
+  const client = await db.getClient();
+  try {
+    await client.query('BEGIN');
+    const job = await client.query('SELECT * FROM audit_archive_jobs WHERE archive_job_id=$1 FOR UPDATE', [jobId]);
+    if (!job.rows.length || job.rows[0].status !== 'VERIFIED') throw new Error('This archive is not ready for cleanup.');
+    const approvals = await client.query(`SELECT COUNT(*)::int AS count FROM audit_archive_approvals aa JOIN users u ON u.user_id=aa.user_id WHERE aa.archive_job_id=$1 AND UPPER(u.role)='ADMIN' AND COALESCE(u.status, 'ACTIVE')='ACTIVE'`, [jobId]);
+    if (approvals.rows[0].count < 2) throw new Error('Cleanup locked: waiting for acknowledgement from a second active administrator.');
+    let deleted = 0;
+    while (true) {
+      const result = await client.query(`DELETE FROM audit_logs WHERE audit_id IN (SELECT audit_id FROM audit_logs WHERE archive_job_id=$1 LIMIT $2) RETURNING audit_id`, [jobId, DELETE_BATCH_SIZE]);
+      deleted += result.rowCount;
+      if (result.rowCount < DELETE_BATCH_SIZE) break;
+    }
+    await client.query("UPDATE audit_archive_jobs SET status='DELETED', deleted_at=NOW() WHERE archive_job_id=$1", [jobId]);
+    await client.query('COMMIT');
+    return { deleted };
+  } catch (error) { await client.query('ROLLBACK'); throw error; } finally { client.release(); }
+}
+
 function startAuditArchiveScheduler() {
   const runIfDue = () => {
     if (new Date().getUTCDate() === 1) archiveEligibleAuditLogs().catch((error) => console.error('[AUDIT_ARCHIVE]', error.message));
@@ -190,4 +214,4 @@ function startAuditArchiveScheduler() {
   return setInterval(runIfDue, 12 * 60 * 60 * 1000);
 }
 
-module.exports = { archiveEligibleAuditLogs, getArchiveOverview, startAuditArchiveScheduler, ARCHIVE_DIR };
+module.exports = { archiveEligibleAuditLogs, getArchiveOverview, acknowledgeArchive, cleanupApprovedArchive, startAuditArchiveScheduler, ARCHIVE_DIR };

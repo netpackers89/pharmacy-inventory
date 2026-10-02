@@ -151,9 +151,32 @@ export const ddiAPI = {
   })
 };
 
+export const searchAPI = {
+  global: (q, params) => api.get('/search', { params: { q, ...params } }),
+  pages: () => api.get('/search/pages')
+};
+
 export const dataAPI = {
   seed: () => api.post('/data/seed'),
   clear: () => api.post('/data/clear')
+};
+
+/*
+ * SCHEDULED REPORTS & TELEGRAM DELIVERY (ADMIN-only server-side).
+ * The .xlsx downloads are fetched as Blobs because the API is JWT-protected.
+ */
+export const reportDeliveryAPI = {
+  weeklyExport: (params) => api.get('/reports/weekly/export', { params, responseType: 'blob' }),
+  monthlyExport: (params) => api.get('/reports/monthly/export', { params, responseType: 'blob' }),
+  auditExport: (type, params) => api.get('/reports/audit/export', { params: { ...params, type }, responseType: 'blob' }),
+  binCardExport: (params) => api.get('/reports/bincard/export', { params, responseType: 'blob' }),
+  schedule: () => api.get('/reports/schedule'),
+  deliveries: (params) => api.get('/reports/deliveries', { params }),
+  send: (payload) => api.post('/reports/send', payload),
+  retry: (id) => api.post(`/reports/deliveries/${id}/retry`, {}),
+  // Telegram configuration status + a safe connection test.
+  telegramStatus: () => api.get('/notifications/status'),
+  telegramTest: () => api.post('/notifications/telegram/test', {})
 };
 
 export default api;

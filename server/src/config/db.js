@@ -1,5 +1,7 @@
 const { Pool } = require('pg');
-require('dotenv').config();
+// Loads server/.env AND the repo-root .env, whatever the working directory is,
+// and normalizes quoted/space-padded values. Must run before DATABASE_URL is read.
+require('./env');
 
 const connectionString = process.env.DATABASE_URL;
 const localConfig = {
@@ -337,6 +339,16 @@ const initializeDB = async () => {
           failure_reason TEXT
       );
 
+      -- A historical-data cleanup is never automatic.  The archive remains
+      -- outside the database and two distinct active administrators must
+      -- acknowledge it before an explicit cleanup request can delete logs.
+      CREATE TABLE IF NOT EXISTS audit_archive_approvals (
+          archive_job_id BIGINT NOT NULL REFERENCES audit_archive_jobs(archive_job_id) ON DELETE CASCADE,
+          user_id BIGINT NOT NULL REFERENCES users(user_id),
+          acknowledged_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          PRIMARY KEY (archive_job_id, user_id)
+      );
+
       CREATE TABLE IF NOT EXISTS user_sessions (
           session_id bigserial PRIMARY KEY,
           user_id BIGINT NOT NULL REFERENCES users(user_id),
@@ -424,6 +436,79 @@ const initializeDB = async () => {
       ALTER TABLE sub_categories ADD COLUMN IF NOT EXISTS updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP;
     `);
 
+    /*
+     * OUTBOUND NOTIFICATION LEDGER (Telegram / future channels).
+     *
+     * One row = "this alert was already sent in this state". The UNIQUE
+     * fingerprint is what makes duplicate-alert prevention work: a low-stock
+     * alert for the same medicine is stored once and only re-sent when the
+     * alert state actually changes (or after the configured reminder window).
+     * Rows are deleted when the situation clears, so the next occurrence
+     * notifies again.
+     *
+     * The pharmacy database stays the source of truth — this table only
+     * records delivery, never inventory.
+     */
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notification_log (
+          notification_id bigserial PRIMARY KEY,
+          medicine_id BIGINT REFERENCES medicines(medicine_id) ON DELETE CASCADE,
+          batch_id BIGINT REFERENCES batches(batch_id) ON DELETE CASCADE,
+          alert_type VARCHAR(32) NOT NULL,
+          state VARCHAR(32) NOT NULL DEFAULT 'ACTIVE',
+          channel VARCHAR(16) NOT NULL DEFAULT 'TELEGRAM',
+          fingerprint VARCHAR(120) NOT NULL,
+          message TEXT,
+          delivery_status VARCHAR(16) NOT NULL DEFAULT 'SENT',
+          failure_reason TEXT,
+          last_sent_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      CREATE UNIQUE INDEX IF NOT EXISTS notification_log_fingerprint_unique ON notification_log (fingerprint);
+      CREATE INDEX IF NOT EXISTS notification_log_medicine_id_index ON notification_log (medicine_id);
+    `);
+
+    /*
+     * SCHEDULED REPORT DELIVERY LEDGER (weekly / monthly Excel reports).
+     *
+     * One row = one report for one period and one scope. The UNIQUE period_key
+     * is what makes scheduled reporting idempotent: a server restart, a second
+     * Render instance or an overlapping cron tick can never send the same week
+     * or month twice. Failed deliveries are kept (delivery_status='FAILED') so
+     * they can be retried without generating a duplicate report.
+     *
+     * This is delivery metadata only — inventory data always lives in
+     * stock_movements / batches / audit_logs.
+     */
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS report_deliveries (
+          report_id bigserial PRIMARY KEY,
+          report_type VARCHAR(16) NOT NULL CHECK (report_type IN ('WEEKLY', 'MONTHLY', 'INTERVAL')),
+          scope VARCHAR(16) NOT NULL DEFAULT 'INVENTORY' CHECK (scope IN ('INVENTORY', 'AUDIT')),
+          period_start DATE NOT NULL,
+          period_end DATE NOT NULL,
+          period_key VARCHAR(80) NOT NULL UNIQUE,
+          file_name VARCHAR(255),
+          row_count INTEGER NOT NULL DEFAULT 0,
+          byte_size INTEGER NOT NULL DEFAULT 0,
+          generated_by BIGINT REFERENCES users(user_id) ON DELETE SET NULL,
+          trigger_source VARCHAR(16) NOT NULL DEFAULT 'SCHEDULED' CHECK (trigger_source IN ('SCHEDULED', 'MANUAL', 'RETRY', 'PREVIEW')),
+          delivery_status VARCHAR(16) NOT NULL DEFAULT 'PENDING' CHECK (delivery_status IN ('PENDING', 'SENT', 'FAILED', 'SKIPPED')),
+          delivery_attempts INTEGER NOT NULL DEFAULT 0,
+          last_attempt_at TIMESTAMP(0) WITHOUT TIME ZONE,
+          telegram_message_id BIGINT,
+          failure_reason TEXT,
+          created_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at TIMESTAMP(0) WITHOUT TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
+      );
+      ALTER TABLE report_deliveries ADD COLUMN IF NOT EXISTS report_format VARCHAR(10) NOT NULL DEFAULT 'EXCEL';
+      ALTER TABLE report_deliveries DROP CONSTRAINT IF EXISTS report_deliveries_report_type_check;
+      ALTER TABLE report_deliveries ADD CONSTRAINT report_deliveries_report_type_check
+        CHECK (report_type IN ('WEEKLY', 'MONTHLY', 'INTERVAL'));
+      CREATE INDEX IF NOT EXISTS report_deliveries_type_period_index ON report_deliveries (report_type, period_start DESC);
+      CREATE INDEX IF NOT EXISTS report_deliveries_status_index ON report_deliveries (delivery_status);
+    `);
+
     // Add indexes for performance
     await client.query(`
       CREATE INDEX IF NOT EXISTS medicines_generic_name_index ON medicines(generic_name);
@@ -444,6 +529,7 @@ const initializeDB = async () => {
       CREATE INDEX IF NOT EXISTS audit_logs_module_index ON audit_logs(module);
       CREATE INDEX IF NOT EXISTS audit_logs_created_at_index ON audit_logs(created_at);
       CREATE INDEX IF NOT EXISTS audit_logs_archive_job_id_index ON audit_logs(archive_job_id) WHERE archive_job_id IS NOT NULL;
+      CREATE INDEX IF NOT EXISTS audit_archive_approvals_job_id_index ON audit_archive_approvals(archive_job_id);
       CREATE INDEX IF NOT EXISTS physical_counts_user_id_index ON physical_counts(user_id);
       CREATE INDEX IF NOT EXISTS physical_count_items_count_id_index ON physical_count_items(physical_count_id);
       CREATE INDEX IF NOT EXISTS user_sessions_user_id_index ON user_sessions(user_id);

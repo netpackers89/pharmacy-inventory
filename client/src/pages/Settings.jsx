@@ -21,6 +21,7 @@ import {
   ChevronRight,
   Trash2,
   Lock,
+  Palette,
 } from "lucide-react";
 import {
   usersAPI,
@@ -29,6 +30,7 @@ import {
   settingsAPI,
 } from "../services/api";
 import { useAuth } from "../context/AuthContext";
+import { useTheme, PALETTES } from "../context/ThemeContext";
 import { useToast } from "../context/ToastContext";
 import { StatusBadge, FilterTabs, ConfirmDialog, Pagination } from "../components/ui";
 import { TableSkeleton, EmptyState, ErrorState } from "../components/Feedback";
@@ -39,6 +41,7 @@ const TABS = [
   { id: "categories", icon: <Tag size={16} />, label: "Categories" },
   { id: "pricing", icon: <DollarSign size={16} />, label: "Pricing & Tax" },
   { id: "audit", icon: <ClipboardList size={16} />, label: "Audit Logs" },
+  { id: "appearance", icon: <Palette size={16} />, label: "Appearance" },
 ];
 
 export const Settings = () => {
@@ -86,6 +89,7 @@ export const Settings = () => {
           {activeTab === "categories" && <CategoriesPanel />}
           {activeTab === "pricing" && <PricingPanel />}
           {activeTab === "audit" && <AuditPanel />}
+          {activeTab === "appearance" && <AppearancePanel />}
         </div>
       </div>
     </div>
@@ -1727,6 +1731,20 @@ const AuditPanel = () => {
     });
   };
 
+  const acknowledgeArchive = (job) => {
+    import("../services/api").then(({ default: api }) =>
+      api.post(`/audit-logs/archives/${job.archive_job_id}/acknowledge`).then(loadArchives)
+    );
+  };
+
+  const cleanupArchive = (job) => {
+    if (!window.confirm('This permanently removes only the verified, archived audit logs. Continue?')) return;
+    import("../services/api").then(({ default: api }) =>
+      api.post(`/audit-logs/archives/${job.archive_job_id}/cleanup`).then(loadArchives)
+        .catch((err) => window.alert(err?.response?.data?.error || 'Cleanup remains locked.'))
+    );
+  };
+
   const load = (pageNum = page, pageLimit = limit) => {
     setLoading(true);
     setLoadError(false);
@@ -1783,7 +1801,7 @@ const AuditPanel = () => {
           <div>
             <h3 style={{ margin: 0 }}>Audit Archive</h3>
             <p style={{ margin: "0.3rem 0 0", color: "var(--text-muted)", fontSize: "0.82rem" }}>
-              Audit logs are retained for {archiveInfo?.retentionMonths || 2} months. Download and store verified archives securely; operational data is never included.
+              Audit logs are retained for {archiveInfo?.retentionMonths || 2} months. Operational data is never included; cleanup stays locked until two active administrators acknowledge the verified archive.
             </p>
           </div>
           <button type="button" className="btn btn-secondary btn-sm" onClick={loadArchives}>Refresh archive status</button>
@@ -1800,8 +1818,12 @@ const AuditPanel = () => {
             </p>
             {(archiveInfo.jobs || []).slice(0, 5).map((job) => (
               <div key={job.archive_job_id} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: "0.75rem", borderTop: "1px solid var(--border)", padding: "0.55rem 0", fontSize: "0.82rem" }}>
-                <span>{new Date(job.period_start).toLocaleDateString()} – {new Date(job.period_end).toLocaleDateString()} · {job.record_count} records · <strong>{job.status}</strong></span>
-                {job.file_name && ["VERIFIED", "DELETED"].includes(job.status) && <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadArchive(job)}>Download Excel</button>}
+                <span>{new Date(job.period_start).toLocaleDateString()} – {new Date(job.period_end).toLocaleDateString()} · {job.record_count} records · <strong>{job.status}</strong>{job.status === 'VERIFIED' && ` · approvals ${job.approval_count || 0}/2`}</span>
+                <span style={{ display: 'flex', gap: '0.4rem', flexWrap: 'wrap' }}>
+                  {job.file_name && ["VERIFIED", "DELETED"].includes(job.status) && <button type="button" className="btn btn-secondary btn-sm" onClick={() => downloadArchive(job)}>Download Excel</button>}
+                  {job.status === 'VERIFIED' && <button type="button" className="btn btn-secondary btn-sm" onClick={() => acknowledgeArchive(job)}>Acknowledge archive</button>}
+                  {job.status === 'VERIFIED' && Number(job.approval_count || 0) >= 2 && <button type="button" className="btn btn-primary btn-sm" onClick={() => cleanupArchive(job)}>Proceed with cleanup</button>}
+                </span>
               </div>
             ))}
           </>
@@ -1968,6 +1990,133 @@ const AuditPanel = () => {
           />
         </div>
       </div>
+    </div>
+  );
+};
+// ─── APPEARANCE & THEME ───────────────────────────────────────────────────────
+/*
+ * Live theme picker. Each card previews the palette's own background, surface,
+ * primary and accent colours so the choice is obvious BEFORE clicking. The
+ * selection is applied instantly by ThemeProvider (it writes data-palette and
+ * data-theme on <html>) and persisted in localStorage.
+ */
+const AppearancePanel = () => {
+  const { paletteId, setPalette, theme, palettes } = useTheme();
+  const { toast } = useToast();
+
+  // Fallback swatches for the two "uncoloured" palettes.
+  const swatchFor = (p) => ({
+    bg: p.bg || "#f7f8fa",
+    surface: p.surface || "#ffffff",
+    primary: p.primary || "#16181d",
+    secondary: p.secondary || "#15803d",
+    text: p.text || "#16181d",
+  });
+
+  const groups = [
+    { title: "Light themes", mode: "light", items: palettes.filter((p) => p.mode === "light") },
+    { title: "Dark themes", mode: "dark", items: palettes.filter((p) => p.mode === "dark") },
+    { title: "Additional", mode: "auto", items: palettes.filter((p) => p.mode === "auto") },
+  ];
+
+  const handleSelect = (p) => {
+    setPalette(p.id);
+    toast?.success?.(`${p.label} theme applied.`);
+  };
+
+  const card = (p) => {
+    const s = swatchFor(p);
+    const selected = paletteId === p.id;
+    const isSystem = p.mode === "auto";
+    return (
+      <button
+        key={p.id}
+        type="button"
+        onClick={() => handleSelect(p)}
+        aria-pressed={selected}
+        className={`theme-card ${selected ? "selected" : ""}`}
+        style={selected ? { borderColor: s.primary, boxShadow: `0 0 0 3px ${s.primary}33` } : undefined}
+      >
+        {/* Colour preview */}
+        <div className="theme-card__preview" style={{ background: s.bg, borderBottom: `1px solid ${s.surface}` }}>
+          <div className="theme-card__bar" style={{ background: s.surface }}>
+            <span className="theme-card__dot" style={{ background: s.primary }} />
+            <span className="theme-card__line" style={{ background: s.text, opacity: 0.35 }} />
+            <span className="theme-card__line short" style={{ background: s.text, opacity: 0.2 }} />
+          </div>
+          <div className="theme-card__chips">
+            <span style={{ background: s.primary }} />
+            <span style={{ background: s.secondary }} />
+            <span style={{ background: s.text, opacity: 0.25 }} />
+          </div>
+        </div>
+
+        <div className="theme-card__meta">
+          <div className="theme-card__title-row">
+            <strong>{p.label}</strong>
+            {selected && <Check size={15} style={{ color: s.primary }} aria-label="Selected" />}
+          </div>
+          <span className="theme-card__note">
+            {p.note || (p.mode === "dark" ? "Dark theme" : "Light theme")}
+          </span>
+          {isSystem && (
+            <span className="theme-card__swatches">
+              <i style={{ background: "#f7f8fa" }} title="Light" />
+              <i style={{ background: "#101216" }} title="Dark" />
+            </span>
+          )}
+        </div>
+      </button>
+    );
+  };
+
+  return (
+    <div className="appearance-panel">
+      <div className="page-title-group" style={{ marginBottom: "0.35rem" }}>
+        <h2>Appearance &amp; Theme</h2>
+        <p>
+          Choose a colour palette for the whole application — dashboard, tables, forms,
+          modals and reports all update instantly. The selection is saved on this device.
+        </p>
+      </div>
+
+      <p style={{ fontSize: "0.8rem", color: "var(--text-muted)", marginBottom: "1.25rem" }}>
+        Currently active: <strong>{palettes.find((p) => p.id === paletteId)?.label || "Classic"}</strong>
+        {" "}({theme} mode)
+      </p>
+
+      {groups.map((g) => (
+        <section key={g.title} style={{ marginBottom: "1.75rem" }}>
+          <h3 style={{ fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-muted)", marginBottom: "0.6rem" }}>
+            {g.title}
+          </h3>
+          <div className="theme-grid">{g.items.map(card)}</div>
+        </section>
+      ))}
+
+      <section>
+        <h3 style={{ fontSize: "0.8rem", textTransform: "uppercase", letterSpacing: "0.06em", color: "var(--text-muted)", marginBottom: "0.6rem" }}>
+          Pharmacy status colours
+        </h3>
+        <div style={{ display: "flex", gap: "0.6rem", flexWrap: "wrap" }}>
+          {[
+            ["In stock", "var(--status-in-stock)"],
+            ["Low stock", "var(--status-low-stock)"],
+            ["Out of stock", "var(--status-out-of-stock)"],
+            ["Expiring soon", "var(--status-expiring)"],
+            ["Controlled", "var(--status-controlled)"],
+          ].map(([label, colour]) => (
+            <span key={label} style={{ display: "inline-flex", alignItems: "center", gap: "0.4rem", padding: "0.3rem 0.6rem", borderRadius: 999, border: "1px solid var(--border)", fontSize: "0.78rem" }}>
+              <i style={{ width: 10, height: 10, borderRadius: 999, background: colour, display: "inline-block" }} />
+              {label}
+            </span>
+          ))}
+        </div>
+        <p style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: "0.6rem" }}>
+          Status is always shown with a text label as well as colour, so it is never
+          communicated by colour alone.
+        </p>
+      </section>
     </div>
   );
 };

@@ -1,6 +1,6 @@
 const express = require('express');
 const router = express.Router();
-const { getAuditLogs, exportAuditLogs, getAuditMeta, getArchiveOverview, downloadArchive } = require('../controllers/auditController');
+const { getAuditLogs, exportAuditLogs, getAuditMeta, getArchiveOverview, downloadArchive, acknowledgeArchive, cleanupArchive } = require('../controllers/auditController');
 const { authenticate, requireAdmin } = require('../middleware/auth');
 
 /*
@@ -13,6 +13,8 @@ const { authenticate, requireAdmin } = require('../middleware/auth');
 router.get('/meta/actions', authenticate, requireAdmin, getAuditMeta);
 router.get('/archives', authenticate, requireAdmin, getArchiveOverview);
 router.get('/archives/:id/download', authenticate, requireAdmin, downloadArchive);
+router.post('/archives/:id/acknowledge', authenticate, requireAdmin, acknowledgeArchive);
+router.post('/archives/:id/cleanup', authenticate, requireAdmin, cleanupArchive);
 router.get('/export', authenticate, requireAdmin, exportAuditLogs);
 router.get('/', authenticate, requireAdmin, getAuditLogs);
 

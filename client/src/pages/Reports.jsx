@@ -3,13 +3,15 @@ import './Reports.css';
 import {
   BarChart, Bar, LineChart, Line, XAxis, YAxis, CartesianGrid, Tooltip, ResponsiveContainer, PieChart, Pie, Cell, Legend
 } from 'recharts';
-import { reportsAPI } from '../services/api';
+import { reportsAPI, reportDeliveryAPI } from '../services/api';
+import { saveAxiosFile } from '../utils/download';
 import { SalesAnalytics } from '../components/SalesAnalytics';
 import { useAuth } from '../context/AuthContext';
 import { Pagination } from '../components/ui';
 import {
   TrendingUp, Package, DollarSign, ShoppingBag,
-  AlertTriangle, Activity, BarChart2, Users, Download, RefreshCw, Shield
+  AlertTriangle, Activity, BarChart2, Users, Download, RefreshCw, Shield,
+  Send, FileSpreadsheet, Bell, Loader2
 } from 'lucide-react';
 
 const TABS = [
@@ -22,6 +24,7 @@ const TABS = [
   { id: 'moving', icon: <TrendingUp size={14}/>, label: 'Fast / Slow' },
   { id: 'users', icon: <Users size={14}/>, label: 'Performance' },
   { id: 'audit', icon: <Shield size={14}/>, label: 'Audit Log' },
+  { id: 'delivery', icon: <Send size={14}/>, label: 'Telegram Reports', adminOnly: true },
 ];
 
 const fmt = (n) => parseFloat(n || 0).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -52,9 +55,9 @@ export const Reports = () => {
         </div>
       </div>
 
-      {/* Tab Nav — Audit Log is ADMIN-only (enforced server-side too) */}
+      {/* Tab Nav — Audit Log & Excel/Telegram are ADMIN-only (enforced server-side too) */}
       <div className="reports-tabs">
-        {TABS.filter(t => t.id !== 'audit' || isAdmin).map(t => (
+        {TABS.filter(t => !t.adminOnly || isAdmin).map(t => (
           <button key={t.id} onClick={() => setActiveTab(t.id)}
             className={`report-tab-btn ${activeTab === t.id ? 'active' : ''}`}>
             {t.icon} {t.label}
@@ -72,6 +75,7 @@ export const Reports = () => {
         {activeTab === 'moving' && <MovingTab />}
         {activeTab === 'users' && <UsersTab />}
         {activeTab === 'audit' && <AuditTab from={dateFrom} to={dateTo} />}
+        {activeTab === 'delivery' && isAdmin && <ReportDeliveryTab from={dateFrom} to={dateTo} />}
       </div>
     </div>
   );
@@ -645,6 +649,240 @@ const AuditTab = ({ from, to }) => {
         label="events"
         onPageChange={(p) => setPage(Math.min(Math.max(1, p), totalPages))}
       />
+    </div>
+  );
+};
+// ─── EXCEL & TELEGRAM DELIVERY (ADMIN) ────────────────────────────────────────
+// Generates the weekly/monthly inventory & audit .xlsx workbooks from REAL
+// database rows, lets an administrator download them, and (re)sends them to the
+// configured Telegram chat. Every send is recorded by the backend; a report is
+// only reported as delivered when Telegram confirms success.
+const REPORT_SCOPES = [
+  { v: 'INVENTORY', l: 'Inventory' },
+  { v: 'AUDIT', l: 'Audit' },
+];
+const REPORT_TYPES = [
+  { v: 'WEEKLY', l: 'Weekly' },
+  { v: 'MONTHLY', l: 'Monthly' },
+];
+const REPORT_FORMATS = [
+  { v: 'TEXT', l: 'Text message' },
+  { v: 'CSV', l: 'CSV attachment' },
+  { v: 'EXCEL', l: 'Excel attachment' },
+];
+
+const ReportDeliveryTab = ({ from, to }) => {
+  const [schedule, setSchedule] = useState(null);
+  const [deliveries, setDeliveries] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busy, setBusy] = useState('');
+  const [msg, setMsg] = useState(null);
+  const [useRange, setUseRange] = useState(false);
+  const [type, setType] = useState('WEEKLY');
+  const [scope, setScope] = useState('INVENTORY');
+  const [format, setFormat] = useState('EXCEL');
+
+  const rangeParams = () => (useRange && from && to ? { from, to } : {});
+
+  const loadDeliveries = () => {
+    reportDeliveryAPI.deliveries({ limit: 25 })
+      .then(r => setDeliveries(r.data?.deliveries || []))
+      .catch(() => setDeliveries([]));
+  };
+
+  useEffect(() => {
+    setLoading(true);
+    Promise.all([
+      reportDeliveryAPI.schedule().catch(() => null),
+      reportDeliveryAPI.deliveries({ limit: 25 }).catch(() => null),
+    ]).then(([s, d]) => {
+      if (s) setSchedule(s.data);
+      if (d) setDeliveries(d.data?.deliveries || []);
+      setLoading(false);
+    });
+  }, []);
+
+  const download = async (key, request, fallback) => {
+    setBusy(key); setMsg(null);
+    try {
+      const res = await request();
+      await saveAxiosFile(res, fallback);
+      setMsg({ ok: true, text: `${fallback} downloaded.` });
+    } catch (err) {
+      setMsg({ ok: false, text: err?.message || 'Download failed.' });
+    } finally { setBusy(''); }
+  };
+
+  const sendNow = async (resend = false) => {
+    setBusy(resend ? 'resend' : 'send'); setMsg(null);
+    try {
+      const res = await reportDeliveryAPI.send({ type, scope, format, ...rangeParams(), resend });
+      const d = res.data || {};
+      if (d.delivered) setMsg({ ok: true, text: `${type} ${scope} ${format} report delivered to Telegram (message ${d.messageId ?? 'ok'}).` });
+      else if (d.skipped) setMsg({ ok: true, text: `Not sent: ${d.reason === 'already-sent' ? 'this period was already delivered (use “Force resend”).' : d.reason}` });
+      else setMsg({ ok: false, text: d.error || 'Telegram could not deliver the report.' });
+      loadDeliveries();
+    } catch (err) {
+      setMsg({ ok: false, text: err?.response?.data?.error || err?.message || 'Send failed.' });
+    } finally { setBusy(''); }
+  };
+
+  const retry = async (id) => {
+    setBusy(`retry-${id}`); setMsg(null);
+    try {
+      const res = await reportDeliveryAPI.retry(id);
+      setMsg(res.data?.delivered
+        ? { ok: true, text: 'Report re-delivered successfully.' }
+        : { ok: false, text: res.data?.error || 'Retry did not deliver.' });
+      loadDeliveries();
+    } catch (err) {
+      setMsg({ ok: false, text: err?.response?.data?.error || err?.message || 'Retry failed.' });
+    } finally { setBusy(''); }
+  };
+
+  const testConnection = async () => {
+    setBusy('test'); setMsg(null);
+    try {
+      const res = await reportDeliveryAPI.telegramTest();
+      setMsg({ ok: true, text: res.data?.message || 'Test notification delivered.' });
+    } catch (err) {
+      setMsg({ ok: false, text: err?.response?.data?.message || err?.message || 'Telegram test failed.' });
+    } finally { setBusy(''); }
+  };
+
+  const configured = Boolean(schedule?.telegram_configured);
+  const STATUS = { SENT: '#15803d', FAILED: '#b91c1c', SKIPPED: '#b45309', PENDING: '#64748b' };
+  const btn = {
+    display: 'inline-flex', alignItems: 'center', gap: '0.4rem', padding: '0.5rem 0.85rem',
+    borderRadius: 8, border: '1px solid var(--border)', background: 'var(--surface)',
+    cursor: 'pointer', fontWeight: 600, fontSize: '0.82rem',
+  };
+return (
+    <div>
+      {/* Status banner */}
+      <div className="kpi-card" style={{ marginBottom: '1.25rem', alignItems: 'flex-start' }}>
+        <div className="kpi-icon"><Bell size={18} /></div>
+        <div style={{ flex: 1 }}>
+          <div className="kpi-label">Telegram reporting</div>
+          <div className="kpi-value" style={{ fontSize: '1rem' }}>
+            {configured
+              ? `Connected — every ${schedule?.interval_hours || 12} hours, weekly “${schedule?.weekly_cron}”, monthly “${schedule?.monthly_cron}” (${schedule?.timezone})`
+              : 'Not configured — set TELEGRAM_BOT_TOKEN and a valid TELEGRAM_CHAT_ID on the server'}
+          </div>
+          {schedule && (
+            <div className="kpi-sub">
+              Automatic update: {schedule.settings?.interval_report_enabled === false ? 'off' : 'on'} ({schedule.interval_format || 'TEXT'}) · Catch-up window: {schedule.catch_up_hours}h · Inventory report: {schedule.settings?.inventory_report_enabled === false ? 'off' : 'on'} · Audit report: {schedule.settings?.audit_report_enabled === false ? 'off' : 'on'}
+            </div>
+          )}
+        </div>
+        <button style={btn} onClick={testConnection} disabled={busy === 'test'}>
+          {busy === 'test' ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Test connection
+        </button>
+      </div>
+
+      {msg && (
+        <div style={{
+          marginBottom: '1rem', padding: '0.7rem 0.9rem', borderRadius: 8, fontSize: '0.85rem', fontWeight: 600,
+          background: msg.ok ? '#dcfce7' : '#fee2e2', color: msg.ok ? '#166534' : '#991b1b',
+        }}>
+          {msg.text}
+        </div>
+      )}
+
+      {/* Downloads */}
+      <h3 style={{ margin: '0 0 0.6rem', fontSize: '0.95rem' }}>Download Excel reports</h3>
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', marginBottom: '1.25rem' }}>
+        <button style={btn} disabled={busy !== ''}
+          onClick={() => download('w', () => reportDeliveryAPI.weeklyExport(rangeParams()), 'weekly inventory report')}>
+          {busy === 'w' ? <Loader2 size={14} className="spin" /> : <FileSpreadsheet size={14} />} Weekly inventory (.xlsx)
+        </button>
+        <button style={btn} disabled={busy !== ''}
+          onClick={() => download('m', () => reportDeliveryAPI.monthlyExport(rangeParams()), 'monthly inventory report')}>
+          {busy === 'm' ? <Loader2 size={14} className="spin" /> : <FileSpreadsheet size={14} />} Monthly inventory (.xlsx)
+        </button>
+        <button style={btn} disabled={busy !== ''}
+          onClick={() => download('wa', () => reportDeliveryAPI.auditExport('WEEKLY', rangeParams()), 'weekly audit report')}>
+          {busy === 'wa' ? <Loader2 size={14} className="spin" /> : <Shield size={14} />} Weekly audit (.xlsx)
+        </button>
+        <button style={btn} disabled={busy !== ''}
+          onClick={() => download('ma', () => reportDeliveryAPI.auditExport('MONTHLY', rangeParams()), 'monthly audit report')}>
+          {busy === 'ma' ? <Loader2 size={14} className="spin" /> : <Shield size={14} />} Monthly audit (.xlsx)
+        </button>
+      </div>
+{/* Send to Telegram */}
+      <h3 style={{ margin: '0 0 0.6rem', fontSize: '0.95rem' }}>Send to Telegram</h3>
+      <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap', alignItems: 'center', marginBottom: '1.25rem' }}>
+        <select value={type} onChange={e => setType(e.target.value)} className="form-control" style={{ maxWidth: 150 }} aria-label="Report type">
+          {REPORT_TYPES.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+        </select>
+        <select value={scope} onChange={e => setScope(e.target.value)} className="form-control" style={{ maxWidth: 170 }} aria-label="Report scope">
+          {REPORT_SCOPES.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+        </select>
+        <select value={format} onChange={e => setFormat(e.target.value)} className="form-control" style={{ maxWidth: 190 }} aria-label="Telegram report format">
+          {REPORT_FORMATS.map(o => <option key={o.v} value={o.v}>{o.l}</option>)}
+        </select>
+        <label style={{ display: 'inline-flex', gap: '0.4rem', alignItems: 'center', fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+          <input type="checkbox" checked={useRange} onChange={e => setUseRange(e.target.checked)} />
+          Use the date range above
+        </label>
+        <button style={btn} onClick={() => sendNow(false)} disabled={busy !== '' || !configured || (useRange && (!from || !to))}>
+          {busy === 'send' ? <Loader2 size={14} className="spin" /> : <Send size={14} />} Send now
+        </button>
+        <button style={btn} onClick={() => sendNow(true)} disabled={busy !== '' || !configured || (useRange && (!from || !to))}>
+          {busy === 'resend' ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />} Force resend
+        </button>
+      </div>
+
+      {/* Delivery ledger */}
+      <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginBottom: '0.6rem' }}>
+        <h3 style={{ margin: 0, fontSize: '0.95rem' }}>Delivery history</h3>
+        <button style={{ ...btn, marginLeft: 'auto' }} onClick={loadDeliveries} disabled={loading}>
+          <RefreshCw size={14} /> Refresh
+        </button>
+      </div>
+      {loading ? <Loading /> : (
+        <div style={{ overflowX: 'auto' }}>
+          <table className="custom-table">
+            <thead>
+              <tr><th>Period</th><th>Report</th><th>Format</th><th>File</th><th>Rows</th><th>Status</th><th>Attempts</th><th>Last attempt</th><th>Detail</th><th></th></tr>
+            </thead>
+            <tbody>
+              {deliveries.map((d) => (
+                <tr key={d.report_id}>
+                  <td style={{ whiteSpace: 'nowrap', fontSize: '0.8rem' }}>
+                    {String(d.period_start).slice(0, 10)} → {String(d.period_end).slice(0, 10)}
+                  </td>
+                  <td>{d.report_type === 'INTERVAL' ? '12-hour / Inventory' : `${d.report_type} / ${d.scope}`}</td>
+                  <td>{d.report_format || 'EXCEL'}</td>
+                  <td style={{ fontSize: '0.75rem', color: '#64748b' }}>{d.file_name || '—'}</td>
+                  <td>{d.row_count}</td>
+                  <td>
+                    <span style={{
+                      padding: '0.2rem 0.55rem', borderRadius: 12, fontSize: '0.72rem', fontWeight: 700,
+                      background: `${STATUS[d.delivery_status] || '#64748b'}20`, color: STATUS[d.delivery_status] || '#64748b',
+                    }}>
+                      {d.delivery_status}
+                    </span>
+                  </td>
+                  <td>{d.delivery_attempts}</td>
+                  <td style={{ fontSize: '0.78rem', whiteSpace: 'nowrap' }}>{d.last_attempt_at ? new Date(d.last_attempt_at).toLocaleString() : '—'}</td>
+                  <td style={{ maxWidth: 260, fontSize: '0.78rem', color: '#475569' }}>{d.failure_reason || '—'}</td>
+                  <td>
+                    {(d.delivery_status === 'FAILED' || d.delivery_status === 'SKIPPED') && (
+                      <button style={{ ...btn, padding: '0.3rem 0.55rem' }} onClick={() => retry(d.report_id)} disabled={busy === `retry-${d.report_id}`}>
+                        {busy === `retry-${d.report_id}` ? <Loader2 size={13} className="spin" /> : <RefreshCw size={13} />} Retry
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              ))}
+              {deliveries.length === 0 && (
+                <tr><td colSpan="10" style={{ textAlign: 'center', padding: '2rem', color: '#94a3b8' }}>No report has been generated yet.</td></tr>
+              )}
+            </tbody>
+          </table>
+        </div>
+      )}
     </div>
   );
 };

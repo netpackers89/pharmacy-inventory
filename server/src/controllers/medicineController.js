@@ -1,6 +1,10 @@
 const db = require('../config/db');
 const importService = require('../services/importService');
-const { validatePackagingInput } = require('../utils/packaging');
+const {
+    validatePackagingInput,
+    baseUnitFromDosageForm,
+} = require('../utils/packaging');
+const { enqueueMedicineCheck } = require('../services/inventoryAlertService');
 
 // Get all medicines with their calculated total stock from batches.
 // Supports OPTIONAL server-side pagination + filters (used by the Medicines
@@ -340,6 +344,18 @@ exports.addMedicine = async (req, res) => {
             dispense_frequency_interval, dispense_duration_days, dispense_route,
         });
 
+        /*
+         * base_unit is NOT NULL and every stock / POS calculation counts in ONE
+         * base unit (see utils/packaging.js). The Add/Edit form therefore does
+         * not have to send it: when it is absent we derive it from the dosage
+         * form using the SAME helper the sales/POS layer uses, so the stored
+         * value can never disagree with what the app computes at read time.
+         *
+         * Passing an explicit NULL here used to bypass the column DEFAULT and
+         * produce: null value in column "base_unit" (Postgres code 23502).
+         */
+        const resolvedBaseUnit = packaging.base_unit || baseUnitFromDosageForm(dosage_form);
+
         // 1. Create Medicine
         const insertMed = `
             INSERT INTO medicines (
@@ -355,7 +371,7 @@ exports.addMedicine = async (req, res) => {
                 sell_price_outer_box,
                 dispense_dose, dispense_frequency, dispense_frequency_interval,
                 dispense_duration_days, dispense_route
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36)
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37)
             RETURNING medicine_id
         `;
         const medValues = [
@@ -368,7 +384,9 @@ exports.addMedicine = async (req, res) => {
             (req.body.pronunciation_english || '').trim() || null,
             (req.body.pronunciation_amharic || '').trim() || null,
             // Packaging / dispensing master data (validated above)
-                        packaging.base_unit || null,
+            // base_unit is ALWAYS a real value — derived from the dosage form
+            // when the client did not send one (NOT NULL column).
+            resolvedBaseUnit,
             packaging.units_per_strip || null,
             packaging.strips_per_inner_box || null,
             packaging.inner_boxes_per_outer_box || null,
@@ -433,6 +451,14 @@ exports.addMedicine = async (req, res) => {
         }
 
         await client.query('COMMIT');
+
+        /*
+         * Telegram alert check — AFTER the transaction is committed and the
+         * response below has been prepared. Debounced (2s) and fire-and-forget:
+         * a notification problem can never slow down or fail a registration.
+         */
+        enqueueMedicineCheck(medicine_id);
+
         res.status(201).json({ message: 'Medicine registered successfully', medicine_id });
     } catch (err) {
         await client.query('ROLLBACK');
@@ -488,7 +514,7 @@ exports.updateMedicine = async (req, res) => {
         }
 
         const target = await client.query(
-            'SELECT medicine_id, generic_name, category_id, sub_category_id FROM medicines WHERE medicine_id = $1 FOR UPDATE',
+            'SELECT medicine_id, generic_name, category_id, sub_category_id, dosage_form, base_unit FROM medicines WHERE medicine_id = $1 FOR UPDATE',
             [medicineId]
         );
         if (target.rows.length === 0) {
@@ -630,7 +656,18 @@ exports.updateMedicine = async (req, res) => {
         if (req.body.pronunciation_amharic !== undefined) push('pronunciation_amharic', (req.body.pronunciation_amharic || '').trim() || null);
 
         // Packaging / dispensing master data (validated above — only present fields)
-        if (packaging.base_unit !== undefined) push('base_unit', packaging.base_unit || null);
+        /*
+         * base_unit is NOT NULL, so an empty value must never reach the UPDATE.
+         * If the client clears it (or the dosage form changes), the value is
+         * re-derived from the effective dosage form — the same rule the POS
+         * layer applies at read time, so nothing drifts.
+         */
+        if (packaging.base_unit !== undefined) {
+            const effectiveDosageForm = (dosage_form !== undefined && dosage_form !== null && dosage_form !== '')
+                ? dosage_form
+                : target.rows[0].dosage_form;
+            push('base_unit', packaging.base_unit || baseUnitFromDosageForm(effectiveDosageForm));
+        }
         if (packaging.units_per_strip !== undefined) push('units_per_strip', packaging.units_per_strip || null);
         if (packaging.strips_per_inner_box !== undefined) push('strips_per_inner_box', packaging.strips_per_inner_box || null);
         if (packaging.inner_boxes_per_outer_box !== undefined) push('inner_boxes_per_outer_box', packaging.inner_boxes_per_outer_box || null);
@@ -668,6 +705,11 @@ exports.updateMedicine = async (req, res) => {
         await client.query(`INSERT INTO audit_logs (user_id, action, module, table_name, record_id, new_values, ip_address, user_agent, session_id) VALUES ($1,$2,'MEDICINES',$3,$4,$5,$6,$7,$8)`, [current_user_id, 'MEDICINE_UPDATED', 'medicines', medicineId, JSON.stringify({ generic_name, brand_name, description: `Updated ${generic_name || 'unknown'} ${brand_name || ''}` }), req.ipAddress || null, req.userAgent || null, req.sessionId || null]);
 
         await client.query('COMMIT');
+
+        // Alert service re-evaluates stock/expiry shortly after this change
+        // (debounced, fire-and-forget — Telegram never delays this response).
+        enqueueMedicineCheck(medicineId);
+
         res.json(result.rows[0]);
     } catch (err) {
         await client.query('ROLLBACK');
@@ -915,4 +957,3 @@ exports.importTemplate = async (req, res) => {
     const type = String(req.query.type || 'batch').toLowerCase();
     res.json(importService.templateRows[type] || importService.templateRows.batch);
 };
-

@@ -61,6 +61,10 @@ export function AppContent() {
 
   const handleScanSuccess = (med) => {
     if (!med) return;
+    /* A confirmed barcode/QR scan is a meaningful action, so it gets the
+       short, soft scan blip. playScanSound() is a no-op until the user has
+       interacted with the page, and it cannot stack or distort. */
+    playScanSound();
     setScannedMed(med);
     setIsBarcodeOpen(false);
     setActivePage('pos');
@@ -108,6 +112,7 @@ export function AppContent() {
         <Header
           onScanClick={() => setIsBarcodeOpen(true)}
           onSelectMedicine={() => setActivePage('pos')}
+          onNavigate={(page) => setActivePage(page)}
           toggleSidebar={() => setSidebarOpen(!sidebarOpen)}
           isSidebarOpen={sidebarOpen}
         />

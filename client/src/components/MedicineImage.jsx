@@ -1,5 +1,6 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import './MedicineImage.css';
+import { getCachedImageUrl, cacheMedicineImage } from '../services/offlineSync';
 
 /*
  * MEDICINE IMAGE system.
@@ -16,6 +17,17 @@ import './MedicineImage.css';
  * The rendered <img> is fully predictable: fixed aspect-ratio container,
  * object-fit: contain, lazy loading, and an onError handler that swaps in
  * the fallback image instantly when a URL turns out to be broken.
+ *
+ * OFFLINE PICTURES
+ * ────────────────
+ * Passing `medicineId` turns on local picture support:
+ *   • When offline (or if the remote image fails), the copy already stored in
+ *     IndexedDB is rendered instead, so a medicine the pharmacist has already
+ *     looked at still shows its picture with no connection.
+ *   • When online, the picture is quietly downloaded once into IndexedDB so
+ *     it is available next time the device goes offline.
+ *   • A picture that was never downloaded simply uses the normal placeholder.
+ * Without `medicineId` the component behaves exactly as it always has.
  */
 
 export const MEDICINE_FALLBACK = (label = 'Medicine') =>
@@ -68,10 +80,75 @@ export const getMedicineImage = (src) => {
 export const getMedicineImageFromMedicine = (med) =>
   getMedicineImage(med?.image_url);
 
-export const MedicineImage = ({ src, alt, className, placebo, contain = true }) => {
+export const MedicineImage = ({
+  src,
+  alt,
+  className,
+  placebo,
+  contain = true,
+  medicineId,
+  medicine,
+}) => {
   const [failed, setFailed] = useState(false);
+  /* Object URL of the locally cached copy, when one exists. */
+  const [localUrl, setLocalUrl] = useState(null);
+  const [triedLocal, setTriedLocal] = useState(false);
+  const localUrlRef = useRef(null);
+
   const resolved = getMedicineImage(src);
-  const usable = resolved && !failed ? resolved : MEDICINE_FALLBACK(alt || placebo || 'Medicine');
+  const offline = typeof navigator !== 'undefined' && navigator.onLine === false;
+
+  /*
+   * Online → make sure this picture is stored locally for next time.
+   * Runs once per medicine and is a no-op when the URL is missing, inline or
+   * already cached, so it never re-downloads the same image.
+   */
+  useEffect(() => {
+    if (!medicine || !resolved) return;
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) return;
+    cacheMedicineImage({ ...medicine, image_url: resolved });
+  }, [medicineId, resolved, medicine]);
+
+  /*
+   * Offline (or after a failure) → look for a locally cached copy.
+   * `triedLocal` makes sure we only look once per component instance, so a
+   * list of 100 cards does not fire 100 identical lookups on re-render.
+   */
+  useEffect(() => {
+    if (medicineId === undefined || medicineId === null) return;
+    if (!offline && !failed) return;
+    if (triedLocal) return;
+    setTriedLocal(true);
+
+    let cancelled = false;
+    getCachedImageUrl(medicineId).then((url) => {
+      if (cancelled || !url) return;
+      localUrlRef.current = url;
+      setLocalUrl(url);
+    });
+
+    return () => { cancelled = true; };
+  }, [medicineId, offline, failed, triedLocal]);
+
+  /* Release the object URL when this card goes away. */
+  useEffect(() => () => {
+    if (localUrlRef.current) {
+      try { URL.revokeObjectURL(localUrlRef.current); } catch (_) { /* ignore */ }
+      localUrlRef.current = null;
+    }
+  }, []);
+
+  const fallback = MEDICINE_FALLBACK(alt || placebo || 'Medicine');
+
+  /*
+   * Resolution order:
+   *   1. a locally cached copy (offline, or the remote one just failed)
+   *   2. the remote/local URL, while it is working
+   *   3. the existing inline-SVG placeholder
+   */
+  const usable = localUrl
+    || (resolved && !failed ? resolved : null)
+    || fallback;
 
   return (
     <img
@@ -82,8 +159,13 @@ export const MedicineImage = ({ src, alt, className, placebo, contain = true }) 
       decoding="async"
       draggable={false}
       onError={(e) => {
-        // Broken URL / failed download → swap in the working fallback.
-        e.currentTarget.src = MEDICINE_FALLBACK(alt || placebo || 'Medicine');
+        /* Broken URL / failed download → try the local copy, else the
+           always-available placeholder. */
+        if (localUrl) {
+          e.currentTarget.src = localUrl;
+          return;
+        }
+        e.currentTarget.src = fallback;
         setFailed(true);
       }}
     />

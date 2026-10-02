@@ -401,14 +401,19 @@ export const MedicineLearnModal = ({
                       <div className="lm__pron-row">
                         <span className="lm__pron-lang">English</span>
                         <span className="lm__pron-text" lang="en">{med.pronunciation_english}</span>
-                        <PronunciationSpeaker text={med.pronunciation_english} language="en" />
+                        <PronunciationSpeaker text={med.pronunciation_english} language="en" label="EN" />
                       </div>
                     )}
                     {med.pronunciation_amharic && (
                       <div className="lm__pron-row">
                         <span className="lm__pron-lang">Amharic</span>
                         <span className="lm__pron-text" lang="am">{med.pronunciation_amharic}</span>
-                        <PronunciationSpeaker text={med.pronunciation_amharic} language="am-ET" />
+                        <PronunciationSpeaker
+                          text={med.pronunciation_amharic}
+                          language="am-ET"
+                          label="አማ"
+                          fallbackText={med.pronunciation_english}
+                        />
                       </div>
                     )}
                   </div>

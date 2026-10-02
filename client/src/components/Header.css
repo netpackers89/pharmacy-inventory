@@ -185,3 +185,54 @@
   font-weight: 800;
   font-size: 0.8rem;
 }
+/* ===================================================
+   GLOBAL SEARCH (single navbar search)
+   =================================================== */
+.header-search-kbd {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.6rem;
+  padding: 0.12rem 0.35rem;
+  border: 1px solid var(--border-strong);
+  border-radius: 4px;
+  color: var(--text-muted);
+  background: var(--surface-alt);
+  flex: none;
+}
+
+.search-group { padding: 0.2rem 0; }
+
+.search-group-label {
+  padding: 0.4rem 0.9rem 0.25rem;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-faint);
+}
+
+.search-group-hint {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.4rem 0.9rem;
+  font-size: 0.74rem;
+  color: var(--text-muted);
+}
+
+.search-footer {
+  border-top: 1px solid var(--border);
+  margin-top: 0.2rem;
+  padding-top: 0.5rem;
+}
+
+.search-dropdown-item.active {
+  background: var(--surface-hover);
+}
+
+.search-dropdown-item mark {
+  background: var(--accent-subtle);
+  color: var(--primary);
+  border-radius: 3px;
+  padding: 0 1px;
+  font-weight: 700;
+}

@@ -1,6 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-require('dotenv').config();
+// Robust, working-directory-independent .env loading + secret normalization.
+// MUST stay the very first require so every module below sees a complete
+// process.env (DATABASE_URL, JWT_SECRET, GEMINI_API_KEY, TELEGRAM_*).
+require('./config/env');
 
 // ---------------------------------------------------------------------------
 // Security headers — thin re-implementation of helmet-style defaults so the
@@ -49,6 +52,8 @@ const settingsRoutes = require('./routes/settingsRoutes');
 const reportRoutes = require('./routes/reportRoutes');
 const auditRoutes = require('./routes/auditRoutes');
 const ddiRoutes = require('./routes/ddiRoutes');
+const notificationRoutes = require('./routes/notificationRoutes');
+const searchRoutes = require('./routes/searchRoutes');
 
 const app = express();
 const PORT = process.env.PORT || 5000;
@@ -159,6 +164,8 @@ app.use('/api/settings', settingsRoutes);
 app.use('/api/reports', reportRoutes);
 app.use('/api/audit-logs', auditRoutes);
 app.use('/api/ddi', ddiRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/search', searchRoutes);
 
 // Health check endpoint
 app.get('/api/health', (req, res) => {
@@ -183,6 +190,17 @@ async function startServer() {
   // Seed the local DDI fallback dataset (idempotent).
   const { ensureDdiSeeded } = require('./services/ddiService');
   await ensureDdiSeeded();
+
+  // Background Telegram alert checking (stock + expiry, deduplicated).
+  // Started only when the bot token AND chat id are configured; it never
+  // blocks startup and never crashes the server.
+  const { startAlertScheduler } = require('./services/inventoryAlertService');
+  startAlertScheduler();
+
+  // Scheduled weekly/monthly Excel reports delivered to Telegram (idempotent:
+  // a restart or a second instance can never send the same period twice).
+  const { startReportScheduler } = require('./services/reportSchedulerService');
+  startReportScheduler();
 
   const server = require('http').createServer(app);
   const io = require('./socket').init(server, corsOptions);

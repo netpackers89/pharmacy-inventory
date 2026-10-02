@@ -26,6 +26,26 @@ const normalizeDosageForm = (value) => {
 };
 
 /*
+ * Inventory base units — the smallest unit stock is counted in.
+ * These values MUST match server/src/utils/packaging.js (BASE_UNITS):
+ * the backend derives the same value from the dosage form when the pharmacist
+ * leaves this on "Auto-detect", and every stock/POS calculation counts in it.
+ */
+const BASE_UNIT_OPTIONS = [
+  { value: '', label: 'Auto-detect from dosage form' },
+  { value: 'TABLET', label: 'tablet' },
+  { value: 'CAPSULE', label: 'capsule' },
+  { value: 'BOTTLE', label: 'bottle' },
+  { value: 'TUBE', label: 'tube' },
+  { value: 'VIAL', label: 'vial' },
+  { value: 'AMPOULE', label: 'ampoule' },
+  { value: 'INJECTION', label: 'injection' },
+  { value: 'SACHET', label: 'sachet' },
+  { value: 'PIECE', label: 'piece' },
+  { value: 'UNIT', label: 'unit' },
+];
+
+/*
  * Three-dot action menu used on medicine cards. Stops the card's own
  * click (which opens details) and closes on outside click / Escape.
  */
@@ -159,6 +179,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
     brand_name: '',
     strength: '',
     dosage_form: 'Solid',
+    base_unit: '',
     manufacturer: '',
     country: '',
     image_url: '',
@@ -360,15 +381,17 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
     try {
       const res = await aiAPI.autofill(term, formData.dosage_form);
       const data = res.data || {};
+      /* Structured lists (indications[], side_effects[] …) become readable text. */
+      const joinList = (list) => (Array.isArray(list) ? list.filter(Boolean).join('; ') : '');
       // Merge only into EMPTY fields — never overwrite user-entered info.
       setFormData(prev => ({
         ...prev,
         description: prev.description || data.description || '',
-        indications: prev.indications || data.indication || '',
-        contraindications: prev.contraindications || data.contraindication || '',
-        side_effects: prev.side_effects || data.side_effects || '',
-        warnings: prev.warnings || data.interactions || '',
-        storage_conditions: prev.storage_conditions || data.storage_condition_patient || '',
+        indications: prev.indications || data.indication || joinList(data.indications) || '',
+        contraindications: prev.contraindications || data.contraindication || joinList(data.contraindications) || '',
+        side_effects: prev.side_effects || data.side_effects_summary || joinList(data.side_effects) || '',
+        warnings: prev.warnings || data.interactions || joinList(data.drug_interactions) || joinList(data.warnings) || '',
+        storage_conditions: prev.storage_conditions || data.storage_condition_patient || data.storage || '',
         // Pronunciation is an optional guide — AI only suggests it when
         // confidently known, and it NEVER overrides a value already entered.
         pronunciation_english: prev.pronunciation_english || data.pronunciation_english || '',
@@ -381,7 +404,19 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
           ' A generic safety template was used instead — please fill in the clinical details manually.'
         );
       } else if (data.source === 'GOOGLE_GEMINI') {
-        setAiNotice('AI-assisted information generated. Verify before saving or clinical use.');
+        /*
+         * The reference dose is SHOWN for the pharmacist, but it is never
+         * written into a saved field automatically — doses must be confirmed
+         * against the product literature before clinical use.
+         */
+        const adult = data.dosage?.adult;
+        const pediatric = data.dosage?.pediatric;
+        const doseText = (adult || pediatric)
+          ? ` Reference dose — adult: ${adult || 'n/a'}; paediatric: ${pediatric || 'n/a'}.`
+          : '';
+        setAiNotice(
+          'AI-assisted information generated — verify before saving or clinical use.' + doseText
+        );
       }
     } catch (err) {
       const msg = err.response?.status === 503
@@ -405,6 +440,7 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
       brand_name: med.brand_name || '',
       strength: med.strength || '',
       dosage_form: normalizeDosageForm(med.dosage_form),
+      base_unit: med.base_unit || '',
       manufacturer: med.manufacturer || '',
       country: med.country || '',
       image_url: med.image_url || '',
@@ -790,9 +826,17 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                     </p>
                     {(med.pronunciation_english || med.pronunciation_amharic) && (
                       <p className="medicine-card__pron">
-                        {med.pronunciation_english && <PronunciationSpeaker text={med.pronunciation_english} language="en" label="En" />}
+                        {med.pronunciation_english && <PronunciationSpeaker text={med.pronunciation_english} language="en" label="EN" compact />}
                         {med.pronunciation_english && med.pronunciation_amharic && ' · '}
-                        {med.pronunciation_amharic && <PronunciationSpeaker text={med.pronunciation_amharic} language="am-ET" label="አማ" />}
+                        {med.pronunciation_amharic && (
+                          <PronunciationSpeaker
+                            text={med.pronunciation_amharic}
+                            language="am-ET"
+                            label="አማ"
+                            fallbackText={med.pronunciation_english}
+                            compact
+                          />
+                        )}
                       </p>
                     )}
 
@@ -1059,6 +1103,19 @@ export const Drugs = ({ onOpenPOS, prefillCode, onConsumePrefill, onNavigateImpo
                       onChange={e => setFormData({ ...formData, dosage_form: e.target.value })}>
                       {DOSAGE_FORMS.map(f => <option key={`form-${f}`} value={f}>{f}</option>)}
                     </select>
+                  </div>
+                  <div className="form-group">
+                    <label>Base Unit (inventory unit)</label>
+                    <select className="form-control" value={formData.base_unit || ''}
+                      onChange={e => setFormData({ ...formData, base_unit: e.target.value })}>
+                      {BASE_UNIT_OPTIONS.map(u => (
+                        <option key={`base-unit-${u.value || 'auto'}`} value={u.value}>{u.label}</option>
+                      ))}
+                    </select>
+                    <span className="form-hint">
+                      The unit stock is counted in (e.g. Amoxicillin 500 mg → capsule).
+                      Leave on “Auto-detect” and the server derives it from the dosage form.
+                    </span>
                   </div>
                   <div className="form-group">
                     <label>Manufacturer / Brand Owner *</label>

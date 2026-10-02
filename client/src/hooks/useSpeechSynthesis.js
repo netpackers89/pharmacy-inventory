@@ -16,6 +16,11 @@ import {
  *   - clicking one speaker stops any pronunciation currently playing, and
  *   - every button instantly reflects the correct "speaking" / "idle" state.
  *
+ * It also reports which voice the device will use (`voiceLabel`) and whether
+ * the current language is being read with an APPROXIMATE voice (a same-script
+ * Tigrinya voice, or the English transliteration) so the UI can say so instead
+ * of silently sounding wrong.
+ *
  * The hook also stops speech automatically when the subscribing component
  * unmounts (e.g. the medicine detail modal is closed).
  */
@@ -24,24 +29,22 @@ export const useSpeechSynthesis = () => {
 
   useEffect(() => subscribeSpeech(setState), []);
 
-  const speak = useCallback((text, language) => speakPronunciation(text, language), []);
+  // `opts` accepts { fallbackText, tuning, onVoiceUnavailable }.
+  const speak = useCallback(
+    (text, language, opts) => speakPronunciation(text, language, opts),
+    []
+  );
   const cancel = useCallback(() => cancelSpeech(), []);
 
-  const isSpeaking = useCallback(
-    (language) => {
-      if (!state.speaking || !language) return false;
-      return String(state.lang).toLowerCase() === String(language).toLowerCase();
-    },
-    [state.speaking, state.lang]
-  );
+  /* Compare language ROOTS so "am", "am-ET" and "am-et" all match. */
+  const sameLang = (value, language) => {
+    if (!value || !language) return false;
+    return String(value).split('-')[0].toLowerCase() === String(language).split('-')[0].toLowerCase();
+  };
 
-  const voiceUnavailableFor = useCallback(
-    (language) => {
-      if (!state.voiceUnavailableFor || !language) return false;
-      return String(state.voiceUnavailableFor) === String(language).split('-')[0].toLowerCase();
-    },
-    [state.voiceUnavailableFor]
-  );
+  const isSpeaking = useCallback((language) => state.speaking && sameLang(state.lang, language), [state.speaking, state.lang]);
+  const voiceUnavailableFor = useCallback((language) => sameLang(state.voiceUnavailableFor, language), [state.voiceUnavailableFor]);
+  const isApproximate = useCallback((language) => sameLang(state.approximateFor, language), [state.approximateFor]);
 
   return {
     speak,
@@ -49,8 +52,10 @@ export const useSpeechSynthesis = () => {
     speaking: state.speaking,
     speakingLang: state.lang,
     supported: state.supported,
+    voiceLabel: state.voiceLabel,
     isSpeaking,
     voiceUnavailableFor,
+    isApproximate,
     SPEECH_STATE,
   };
 };

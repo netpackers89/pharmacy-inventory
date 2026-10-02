@@ -3,13 +3,14 @@ import './Inventory.css';
 import {
   Boxes, FileText, Activity, Plus, CheckSquare, Download, Search,
   ArrowLeft, Printer, ShoppingCart, AlertTriangle, PackageX, Loader2, Upload,
-  X, Calculator, ArrowRight, CheckCircle2,
+  X, Calculator, ArrowRight, CheckCircle2, Sheet, FileType,
 } from 'lucide-react';
-import { inventoryAPI, medicinesAPI, suppliersAPI } from '../services/api';
+import { inventoryAPI, medicinesAPI, suppliersAPI, reportDeliveryAPI } from '../services/api';
 import { useAuth } from '../context/AuthContext';
 import { useToast } from '../context/ToastContext';
 import { useGuestGuard } from '../hooks/useGuestGuard';
 import { downloadCsv } from '../utils/csv';
+import { saveAxiosFile } from '../utils/download';
 import { TableSkeleton, EmptyState, ErrorState } from '../components/Feedback';
 import { Pagination } from '../components/ui';
 import { MedicineLearnModal } from '../components/MedicineLearnModal';
@@ -122,6 +123,7 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
     packaging_unit: 'STRIP', units_per_package: '10', quantity: '',
     buy_price: '', sell_price: ''
   });
+  const [medicineSearch, setMedicineSearch] = useState('');
 
   const emptyStockForm = {
     medicine_id: '', supplier_id: '', batch_number: '', barcode: '', qr_code: '',
@@ -148,6 +150,33 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
   // Bin Card States
   const [selectedBinCardMedicine, setSelectedBinCardMedicine] = useState(null);
   const [binCardDetail, setBinCardDetail] = useState(null);
+  const [exportingBinCard, setExportingBinCard] = useState('');
+
+  /*
+   * Export the formal Bin Card for the medicine currently open.
+   * Formats: xlsx | pdf | docx — all produced by the backend from the same
+   * getBinCardData() rows, so they can never disagree.
+   */
+  const exportBinCard = async (format) => {
+    if (!selectedBinCardMedicine?.medicine_id) return;
+    setExportingBinCard(format);
+    try {
+      const batch = selectedBatchFilter !== 'ALL'
+        ? binCardDetail?.batches?.find(b => b.batch_number === selectedBatchFilter)
+        : null;
+      const res = await reportDeliveryAPI.binCardExport({
+        medicine_id: selectedBinCardMedicine.medicine_id,
+        format,
+        ...(batch?.batch_id ? { batch_id: batch.batch_id } : {}),
+      });
+      await saveAxiosFile(res, `bin_card.${format}`);
+      toast.success(`Bin Card exported (${format.toUpperCase()}).`);
+    } catch (err) {
+      toast.error(err?.response?.data?.error || err?.message || 'Unable to export the Bin Card.');
+    } finally {
+      setExportingBinCard('');
+    }
+  };
 
   useEffect(() => {
     let cancelled = false;
@@ -245,12 +274,22 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
 
   const filteredMovements = useMemo(() => movements, [movements]);
 
+  const resupplyMedicines = useMemo(() => {
+    const q = medicineSearch.trim().toLowerCase();
+    const matches = medicines.filter((m) => {
+      const searchable = [m.generic_name, m.brand_name, m.strength, m.barcode, m.qr_code].filter(Boolean).join(' ').toLowerCase();
+      return !q || searchable.includes(q);
+    });
+    // Medicines at/below reorder level appear first when the selector opens.
+    return matches.sort((a, b) => {
+      const aLow = Number(a.stock_on_hand || 0) <= Number(a.reorder_level || 0);
+      const bLow = Number(b.stock_on_hand || 0) <= Number(b.reorder_level || 0);
+      return Number(bLow) - Number(aLow) || String(a.generic_name || '').localeCompare(String(b.generic_name || ''));
+    });
+  }, [medicines, medicineSearch]);
+
   const handleAddStockSubmit = async (e) => {
     e.preventDefault();
-    if (!stockForm.barcode && !stockForm.qr_code) {
-      toast.warning('At least one of Barcode or QR Code is required.');
-      return;
-    }
     /* Packaging validation — mirror the server rules for instant feedback. */
     const dosesPerUnit = Math.floor(Number(stockForm.units_per_package));
     if (!Number.isFinite(dosesPerUnit) || dosesPerUnit < 1) {
@@ -414,6 +453,16 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
     setDetailMedId(null);
     guard(() => {
       setStockForm({ ...emptyStockForm, medicine_id: String(med.medicine_id) });
+      setIsAddStockModalOpen(true);
+    });
+  };
+
+  const openQuickResupply = (recommendation) => {
+    if (!recommendation?.medicine_id) return;
+    guard(() => {
+      // Suggested quantity is supplied by the existing What to Buy calculation.
+      setStockForm({ ...emptyStockForm, medicine_id: String(recommendation.medicine_id), packaging_unit: 'SINGLE_DOSE', units_per_package: '1', quantity: String(recommendation.suggested_qty || '') });
+      setMedicineSearch('');
       setIsAddStockModalOpen(true);
     });
   };
@@ -704,6 +753,22 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
                 <button className="btn btn-secondary" onClick={() => window.print()}>
                   <Printer size={16} /> Print
                 </button>
+                {[
+                  { f: 'pdf', label: 'PDF', Icon: FileText },
+                  { f: 'xlsx', label: 'Excel', Icon: Sheet },
+                  { f: 'docx', label: 'Word', Icon: FileType },
+                ].map(({ f, label, Icon }) => (
+                  <button
+                    key={f}
+                    className="btn btn-secondary"
+                    onClick={() => exportBinCard(f)}
+                    disabled={Boolean(exportingBinCard)}
+                    title={`Export this Bin Card as ${label}`}
+                  >
+                    {exportingBinCard === f ? <Loader2 size={16} className="spin" /> : <Icon size={16} />}
+                    {label}
+                  </button>
+                ))}
               </div>
 
               {/* Medicine identity header — image + full identification */}
@@ -817,30 +882,71 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
                 })()}
               </div>
 
-              {/* Ledger */}
-              <div className="table-scroll-wrap">
-                <table className="custom-table">
+              {/*
+                FORMAL BIN CARD LEDGER
+                Layout follows the official Stock Keep Control Form: the four
+                quantity columns (Received / Issued / Loss-Adj / Balance) are
+                grouped under one "Quantity" heading. On narrow screens the
+                wrapper scrolls horizontally instead of hiding columns.
+              */}
+              <div className="table-scroll-wrap bincard-form-wrap">
+                <table className="custom-table bincard-form">
                   <thead>
                     <tr>
-                      <th>Date</th><th>Type / Ref</th><th>Batch</th><th>Expiry Date</th>
-                      <th>In (+)</th><th>Out (-)</th><th>Balance</th><th>Unit Price</th>
+                      <th rowSpan={2}>Date</th>
+                      <th rowSpan={2}>Doc. No.</th>
+                      <th rowSpan={2}>Receiving or Issuing</th>
+                      <th rowSpan={2}>Received from or Issued to</th>
+                      <th colSpan={4} className="bincard-group">Quantity</th>
+                      <th rowSpan={2}>Batch No.</th>
+                      <th rowSpan={2}>Expiry Date</th>
+                      <th rowSpan={2}>Remarks</th>
+                    </tr>
+                    <tr>
+                      <th className="num">Received</th>
+                      <th className="num">Issued</th>
+                      <th className="num">Loss/Adj</th>
+                      <th className="num">Balance</th>
                     </tr>
                   </thead>
                   <tbody>
-                    {ledgerRows.map((row, i) => (
-                      <tr key={i}>
-                        <td>{row.movement_date ? new Date(row.movement_date).toLocaleDateString() : '—'}</td>
-                        <td><small className="muted-line">{row.notes || row.movement_type}</small></td>
-                        <td>{row.batch_number || '—'}</td>
-                        <td>{row.expiry_date ? new Date(row.expiry_date).toLocaleDateString() : '—'}</td>
-                        <td className="in-cell">{row.stock_in > 0 ? row.stock_in : ''}</td>
-                        <td className="out-cell">{row.stock_out > 0 ? row.stock_out : ''}</td>
-                        <td><strong className="td-strong">{row.balance !== undefined ? row.balance : ''}</strong></td>
-                        <td>{row.unit_price ? `ETB ${parseFloat(row.unit_price).toFixed(2)}` : '—'}</td>
-                      </tr>
-                    ))}
+                    {ledgerRows.map((row, i) => {
+                      const type = row.movement_type || '';
+                      const counterparty =
+                        type === 'RESUPPLY' ? (row.source || 'Supplier')
+                          : type === 'SALE' ? 'Customer / POS'
+                            : type === 'RETURN' ? 'Customer return'
+                              : type === 'DAMAGE' ? 'Write-off (damage)'
+                                : type === 'EXPIRY' ? 'Write-off (expiry)'
+                                  : row.reason || '—';
+                      const docNo = row.reference_id
+                        ? `${row.reference_type ? `${row.reference_type}-` : ''}${row.reference_id}`
+                        : `MOV-${row.movement_id ?? i}`;
+                      return (
+                        <tr key={row.movement_id ?? i}>
+                          <td>{row.movement_date ? new Date(row.movement_date).toLocaleDateString('en-GB') : '—'}</td>
+                          <td><small className="muted-line">{docNo}</small></td>
+                          <td>{type ? type.charAt(0) + type.slice(1).toLowerCase() : '—'}</td>
+                          <td>{counterparty}</td>
+                          <td className="num in-cell">{row.stock_in > 0 ? row.stock_in : ''}</td>
+                          <td className="num out-cell">{row.stock_out > 0 ? row.stock_out : ''}</td>
+                          <td className="num">{row.adjustment ? row.adjustment : ''}</td>
+                          <td className="num"><strong className="td-strong">{row.balance ?? ''}</strong></td>
+                          <td>{row.batch_number || '—'}</td>
+                          <td>{row.batch_expiry ? new Date(row.batch_expiry).toLocaleDateString('en-GB') : '—'}</td>
+                          <td><small className="muted-line">{row.notes || row.reason || ''}</small></td>
+                        </tr>
+                      );
+                    })}
                     {ledgerRows.length === 0 && (
-                      <tr><td colSpan="8"><EmptyState title="No ledger records" description="This batch has no recorded movements yet." /></td></tr>
+                      <tr>
+                        <td colSpan="11">
+                          <EmptyState
+                            title="No transaction history"
+                            description="No stock movements are recorded for this medicine, so no historical balances can be shown."
+                          />
+                        </td>
+                      </tr>
                     )}
                   </tbody>
                 </table>
@@ -957,7 +1063,7 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
                       <tr>
                         <th>Priority</th><th>Medicine</th><th>Stock</th><th>Avg. Daily Sales</th>
                         <th>Stock Cover</th><th>Movement</th><th>Reorder Point</th><th>Buy Qty</th>
-                        <th>ABC/VEN</th><th>Est. Cost</th><th>Confidence</th>
+                        <th>ABC/VEN</th><th>Est. Cost</th><th>Confidence</th><th>Action</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -979,6 +1085,7 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
                           <td>{[w.abc_category, w.ven_category].filter(Boolean).join('/') || '—'}</td>
                           <td>{(w.suggested_qty && w.last_buy_price) ? `ETB ${Number(w.estimated_cost || Number(w.suggested_qty) * Number(w.last_buy_price)).toFixed(2)}` : '—'}</td>
                           <td><span className={`badge ${CONFIDENCE_META[w.confidence]?.cls || 'badge-neutral'}`}>{CONFIDENCE_META[w.confidence]?.label || w.confidence}</span></td>
+                          <td><button type="button" className="btn btn-primary btn-sm" onClick={(e) => { e.stopPropagation(); openQuickResupply(w); }}>Quick Resupply</button></td>
                         </tr>
                       ))}
                     </tbody>
@@ -1007,6 +1114,7 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
                       <small className="muted-line">
                         {[w.when_to_buy, w.movement && `${w.movement} mover`, w.expiry_risk && 'Expiry risk', w.abc_category && `ABC ${w.abc_category}`, w.ven_category && `VEN ${w.ven_category}`].filter(Boolean).join(' · ')}
                       </small>
+                      <span className="btn btn-primary btn-sm" onClick={(e) => { e.preventDefault(); e.stopPropagation(); openQuickResupply(w); }}>Quick Resupply</span>
                     </button>
                   ))}
                 </div>
@@ -1172,10 +1280,11 @@ export const Inventory = ({ onNavigate, onEditMedicine, onSellMedicine }) => {
               <fieldset disabled={savingStock} style={{ border: 'none', margin: 0, padding: 0 }}>
               <div className="form-grid">
                 <div className="form-group full-width">
-                  <label>Select Medicine *</label>
-                  <select required className="form-control" value={stockForm.medicine_id} onChange={e => setStockForm({...stockForm, medicine_id: e.target.value})}>
+                  <label>Search & select medicine *</label>
+                  <input className="form-control" value={medicineSearch} onChange={(e) => setMedicineSearch(e.target.value)} placeholder="Search generic name, brand, strength, barcode or QR…" />
+                  <select required className="form-control" style={{ marginTop: '0.45rem' }} value={stockForm.medicine_id} onChange={e => setStockForm({...stockForm, medicine_id: e.target.value})}>
                     <option value="">— Choose Medicine —</option>
-                    {medicines.map(m => <option key={m.medicine_id} value={m.medicine_id}>{m.generic_name} {m.brand_name ? `(${m.brand_name})` : ''}</option>)}
+                    {resupplyMedicines.map(m => <option key={m.medicine_id} value={m.medicine_id}>{Number(m.stock_on_hand || 0) <= Number(m.reorder_level || 0) ? 'Suggested · ' : ''}{m.generic_name} {m.brand_name ? `(${m.brand_name})` : ''} {m.strength || ''} — Stock {m.stock_on_hand ?? 0} / Reorder {m.reorder_level ?? 0}</option>)}
                   </select>
                 </div>
                 <div className="form-group full-width">

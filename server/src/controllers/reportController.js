@@ -68,7 +68,6 @@ exports.getOverview = async (req, res) => {
     res.status(500).json({ error: 'Server Error' });
   }
 };
-
 // ─── SALES TIME SERIES (Day / Week / Month / Year) ────────────────────────────
 // Buckets completed sales into a revenue time series for the dashboard and
 // reports charts, plus a previous-period comparison so the UI can show growth.
@@ -174,7 +173,6 @@ exports.getSalesSeries = async (req, res) => {
     res.status(500).json({ error: 'Failed to build sales series' });
   }
 };
-
 // ─── SALES REPORT ─────────────────────────────────────────────────────────────
 exports.getSalesReport = async (req, res) => {
   try {
@@ -397,7 +395,146 @@ exports.getMovingReport = async (req, res) => {
   }
 };
 
-// ─── EMPLOYEE / USER PERFORMANCE ─────────────────────────────────────────────
+/* ═══════════════════════════════════════════════════════════════════════
+ * SCHEDULED REPORTS (weekly / monthly Excel) & TELEGRAM DELIVERY
+ *
+ * All routes below are ADMIN-only (enforced in reportRoutes.js). The bot
+ * token is never returned; only delivery status is exposed.
+ * ═══════════════════════════════════════════════════════════════════════ */
+
+const excel = require('../services/reportExcelService');
+const scheduler = require('../services/reportSchedulerService');
+const telegram = require('../services/telegramService');
+const binCardDocument = require('../services/binCardDocumentService');
+
+/** Resolve the reporting period from the query (?from&to) or the schedule. */
+function resolveRequestedPeriod(type, query) {
+  if (query && query.from && query.to) return excel.periodFromRange(query.from, query.to);
+  return excel.resolvePeriod(type);
+}
+
+const generatedBy = (req) => req.user?.full_name || req.user?.username || 'Administrator';
+
+/** Stream a built workbook to the browser as a download. */
+function sendWorkbook(res, built) {
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="${built.fileName}"`);
+  res.setHeader('Content-Length', built.buffer.length);
+  return res.send(built.buffer);
+}
+
+/** GET /api/reports/weekly/export[?from&to] — download the weekly workbook. */
+exports.exportWeeklyReport = async (req, res) => {
+  try {
+    const period = resolveRequestedPeriod('WEEKLY', req.query);
+    const built = await excel.weeklyInventoryReport(period, { generatedBy: generatedBy(req) });
+    await req.auditLog?.(null, 'REPORT_GENERATED', 'REPORTS', {
+      description: `Weekly inventory Excel generated (${period.periodStart} → ${period.periodEndExclusive})`,
+      metadata: { kind: 'WEEKLY', scope: 'INVENTORY', rows: built.rowCount },
+    });
+    return sendWorkbook(res, built);
+  } catch (err) {
+    console.error('[REPORT_EXPORT_WEEKLY]', err.message);
+    return res.status(err.status || 500).json({ success: false, error: 'Unable to generate the weekly report.' });
+  }
+};
+
+/** GET /api/reports/monthly/export[?from&to] — download the monthly workbook. */
+exports.exportMonthlyReport = async (req, res) => {
+  try {
+    const period = resolveRequestedPeriod('MONTHLY', req.query);
+    const built = await excel.monthlyInventoryReport(period, { generatedBy: generatedBy(req) });
+    await req.auditLog?.(null, 'REPORT_GENERATED', 'REPORTS', {
+      description: `Monthly inventory Excel generated (${period.periodStart} → ${period.periodEndExclusive})`,
+      metadata: { kind: 'MONTHLY', scope: 'INVENTORY', rows: built.rowCount },
+    });
+    return sendWorkbook(res, built);
+  } catch (err) {
+    console.error('[REPORT_EXPORT_MONTHLY]', err.message);
+    return res.status(err.status || 500).json({ success: false, error: 'Unable to generate the monthly report.' });
+  }
+};
+
+/** GET /api/reports/audit/export?type=WEEKLY|MONTHLY[&from&to] */
+exports.exportAuditReport = async (req, res) => {
+  try {
+    const type = String(req.query.type || 'WEEKLY').toUpperCase() === 'MONTHLY' ? 'MONTHLY' : 'WEEKLY';
+    const period = resolveRequestedPeriod(type, req.query);
+    const built = await excel.auditReport(type, period, { generatedBy: generatedBy(req) });
+    await req.auditLog?.(null, 'REPORT_GENERATED', 'REPORTS', {
+      description: `${type} audit Excel generated (${period.periodStart} → ${period.periodEndExclusive})`,
+      metadata: { kind: type, scope: 'AUDIT', rows: built.rowCount },
+    });
+    return sendWorkbook(res, built);
+  } catch (err) {
+    console.error('[REPORT_EXPORT_AUDIT]', err.message);
+    return res.status(err.status || 500).json({ success: false, error: 'Unable to generate the audit report.' });
+  }
+};
+
+/**
+ * GET /api/reports/bincard/export?medicine_id=&format=xlsx|pdf|docx[&from&to&batch_id&movement_type]
+ *
+ * Only the SELECTED medicine is exported, in the formal "Stock Keep Control
+ * Form (Bin Card)" layout. PDF and Word are produced from the same
+ * getBinCardData() rows as the Excel workbook.
+ */
+exports.exportBinCard = async (req, res) => {
+  try {
+    const { medicine_id, from, to, batch_id, movement_type } = req.query;
+    const format = String(req.query.format || 'xlsx').toLowerCase();
+    if (!['xlsx', 'pdf', 'docx'].includes(format)) {
+      return res.status(400).json({ success: false, error: 'format must be xlsx, pdf or docx.' });
+    }
+
+    const filters = {
+      medicineId: medicine_id,
+      from: from || null,
+      to: to || null,
+      batchId: batch_id || null,
+      movementType: movement_type ? String(movement_type).toUpperCase() : null,
+    };
+
+    const slug = excel.binCardSlug({ generic_name: medicine_id });
+    let buffer;
+    let fileName;
+
+    if (format === 'xlsx') {
+      const built = await excel.binCardReport({ ...filters, generatedBy: generatedBy(req) });
+      buffer = built.buffer;
+      fileName = built.fileName;
+    } else {
+      const data = await excel.getBinCardData(filters);
+      const base = `bin_card_${excel.binCardSlug(data.medicine)}_${from || 'all'}_${to || 'all'}`;
+      if (format === 'pdf') {
+        buffer = await binCardDocument.binCardPdf(data);
+        fileName = `${base}.pdf`;
+      } else {
+        buffer = await binCardDocument.binCardDocx(data);
+        fileName = `${base}.docx`;
+      }
+      void slug;
+    }
+
+    await req.auditLog?.(null, 'BIN_CARD_EXPORTED', 'INVENTORY', {
+      description: `Bin Card exported as ${format.toUpperCase()} for medicine ${medicine_id}`,
+      metadata: { medicine_id, format, from, to, batch_id, movement_type },
+    });
+
+    const contentTypes = {
+      xlsx: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      pdf: 'application/pdf',
+      docx: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    };
+    res.setHeader('Content-Type', contentTypes[format]);
+    res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+    res.setHeader('Content-Length', buffer.length);
+    return res.send(buffer);
+  } catch (err) {
+    console.error('[REPORT_EXPORT_BINCARD]', err.message);
+    return res.status(err.status || 500).json({ success: false, error: err.message || 'Unable to generate the Bin Card.' });
+  }
+};
 exports.getUserReport = async (req, res) => {
   try {
     const result = await db.query(`
@@ -418,3 +555,132 @@ exports.getUserReport = async (req, res) => {
     res.status(500).json({ error: 'Server Error' });
   }
 };
+/* ── manual generation + Telegram delivery ────────────────────────────── */
+
+const VALID_TYPES = new Set(['WEEKLY', 'MONTHLY']);
+const VALID_SCOPES = new Set(['INVENTORY', 'AUDIT']);
+const VALID_FORMATS = new Set(['TEXT', 'CSV', 'EXCEL']);
+
+/**
+ * POST /api/reports/send
+ * Body: { type: 'WEEKLY'|'MONTHLY', scope: 'INVENTORY'|'AUDIT', format: 'TEXT'|'CSV'|'EXCEL', from?, to?, resend? }
+ * Generates the workbook from real data and sends it to Telegram. Duplicate
+ * sends for the same period are blocked unless `resend: true` is explicit.
+ */
+exports.sendReportNow = async (req, res) => {
+  try {
+    if (!telegram.isConfigured()) {
+      return res.status(400).json({
+        success: false,
+        code: 'TELEGRAM_NOT_CONFIGURED',
+        error: 'Telegram is not configured. Set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID in server/.env.',
+      });
+    }
+
+    const type = String(req.body?.type || 'WEEKLY').toUpperCase();
+    const scope = String(req.body?.scope || 'INVENTORY').toUpperCase();
+    const format = String(req.body?.format || 'EXCEL').toUpperCase();
+    const resend = req.body?.resend === true;
+    const { from, to } = req.body || {};
+
+    if (!VALID_TYPES.has(type)) {
+      return res.status(400).json({ success: false, error: 'type must be WEEKLY or MONTHLY.' });
+    }
+    if (!VALID_SCOPES.has(scope)) {
+      return res.status(400).json({ success: false, error: 'scope must be INVENTORY or AUDIT.' });
+    }
+    if (!VALID_FORMATS.has(format)) {
+      return res.status(400).json({ success: false, error: 'format must be TEXT, CSV, or EXCEL.' });
+    }
+    if ((from && !to) || (to && !from)) {
+      return res.status(400).json({ success: false, error: 'Provide BOTH from and to, or neither.' });
+    }
+
+    const period = from && to ? excel.periodFromRange(from, to) : excel.resolvePeriod(type);
+    const result = await scheduler.deliverReport({
+      type, scope, period,
+      format,
+      generatedBy: req.user?.user_id ?? null,
+      triggerSource: 'MANUAL',
+      force: resend,
+    });
+
+    await req.auditLog?.(
+      null,
+      result.delivered ? 'REPORT_SENT' : (result.skipped ? 'REPORT_SKIPPED' : 'REPORT_SEND_FAILED'),
+      'REPORTS',
+      {
+        description: `${type} ${scope} report (${period.periodStart} → ${period.periodEndExclusive})`,
+        metadata: { ...result, type, scope, format },
+        status: result.ok ? 'SUCCESS' : 'FAILED',
+      }
+    );
+
+    const status = result.delivered || result.skipped ? 200 : 502;
+    return res.status(status).json({ success: Boolean(result.ok), ...result });
+  } catch (err) {
+    console.error('[REPORT_SEND]', err.message);
+    return res.status(err.status || 500).json({ success: false, error: 'Unable to send the report.' });
+  }
+};
+
+/** GET /api/reports/deliveries?limit=40 — the delivery ledger. */
+exports.getDeliveries = async (req, res) => {
+  try {
+    const deliveries = await scheduler.getRecentDeliveries(req.query.limit);
+    res.json({ success: true, deliveries });
+  } catch (err) {
+    console.error('[REPORT_DELIVERIES]', err.message);
+    res.status(500).json({ success: false, error: 'Unable to read report deliveries.' });
+  }
+};
+
+/** POST /api/reports/deliveries/:id/retry — retry a failed/skipped delivery. */
+exports.retryDelivery = async (req, res) => {
+  try {
+    if (!telegram.isConfigured()) {
+      return res.status(400).json({
+        success: false, code: 'TELEGRAM_NOT_CONFIGURED',
+        error: 'Telegram is not configured.',
+      });
+    }
+    const result = await scheduler.retryDelivery(req.params.id, req.user?.user_id ?? null);
+    await req.auditLog?.(
+      null,
+      result.delivered ? 'REPORT_RESENT' : 'REPORT_SEND_FAILED',
+      'REPORTS',
+      {
+        description: `Retry of report delivery ${req.params.id}`,
+        metadata: { ...result },
+        status: result.ok ? 'SUCCESS' : 'FAILED',
+      }
+    );
+    res.status(result.delivered ? 200 : 502).json({ success: Boolean(result.ok), ...result });
+  } catch (err) {
+    console.error('[REPORT_RETRY]', err.message);
+    res.status(err.status || 500).json({ success: false, error: err.message });
+  }
+};
+
+/** GET /api/reports/schedule — scheduler configuration and enable/disable flags. */
+exports.getSchedule = async (req, res) => {
+  try {
+    const settings = await scheduler.getReportSettings();
+    res.json({
+      success: true,
+      timezone: scheduler.CONFIG.TIMEZONE,
+      weekly_cron: scheduler.CONFIG.DEFAULT_WEEKLY_CRON,
+      monthly_cron: scheduler.CONFIG.DEFAULT_MONTHLY_CRON,
+      interval_cron: scheduler.CONFIG.DEFAULT_INTERVAL_CRON,
+      interval_hours: scheduler.CONFIG.INTERVAL_HOURS,
+      interval_format: scheduler.CONFIG.INTERVAL_FORMAT,
+      catch_up_hours: scheduler.CONFIG.CATCHUP_WINDOW_HOURS,
+      telegram_configured: telegram.isConfigured(),
+      settings,
+    });
+  } catch (err) {
+    console.error('[REPORT_SCHEDULE]', err.message);
+    res.status(500).json({ success: false, error: 'Unable to read the report schedule.' });
+  }
+};
+

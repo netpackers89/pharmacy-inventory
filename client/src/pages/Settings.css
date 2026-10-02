@@ -235,3 +235,77 @@
   .audit-filters { grid-template-columns: repeat(2, 1fr); }
   .audit-filter-actions { grid-column: 1 / -1; }
 }
+/* ===================================================
+   APPEARANCE & THEME PICKER
+   Swatches use the palette's own colours, so the cards stay
+   readable in both light and dark modes (they are deliberately
+   NOT themed by the application's own variables).
+   =================================================== */
+.appearance-panel { display: block; }
+
+.theme-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(190px, 1fr));
+  gap: 0.85rem;
+}
+
+.theme-card {
+  display: flex;
+  flex-direction: column;
+  text-align: left;
+  padding: 0;
+  border: 2px solid var(--border);
+  border-radius: var(--radius-md);
+  background: var(--surface);
+  cursor: pointer;
+  overflow: hidden;
+  transition: transform var(--transition-fast), border-color var(--transition-fast),
+    box-shadow var(--transition-fast);
+  font: inherit;
+}
+
+.theme-card:hover { transform: translateY(-2px); border-color: var(--border-strong); }
+.theme-card:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+
+.theme-card__preview {
+  padding: 0.6rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.theme-card__bar {
+  border-radius: 6px;
+  padding: 0.45rem;
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+}
+
+.theme-card__dot { width: 12px; height: 12px; border-radius: 999px; display: inline-block; flex: none; }
+.theme-card__line { height: 6px; border-radius: 3px; width: 44%; display: inline-block; }
+.theme-card__line.short { width: 26%; }
+
+.theme-card__chips { display: flex; gap: 0.3rem; }
+.theme-card__chips span { width: 18px; height: 8px; border-radius: 4px; display: inline-block; }
+
+.theme-card__meta {
+  padding: 0.6rem 0.7rem 0.7rem;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+
+.theme-card__title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.4rem;
+  font-size: 0.85rem;
+}
+
+.theme-card__note { display: block; font-size: 0.74rem; color: var(--text-muted); margin-top: 0.15rem; }
+.theme-card__swatches { display: inline-flex; gap: 0.25rem; margin-top: 0.35rem; }
+.theme-card__swatches i {
+  width: 14px; height: 14px; border-radius: 4px; display: inline-block; border: 1px solid var(--border);
+}

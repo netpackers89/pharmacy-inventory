@@ -55,6 +55,20 @@ Open the client in your browser (Vite will show the local URL, typically `http:/
 Database
 - The server will create necessary tables and seed data on first run if configured to do so. Use a PostgreSQL database locally or a hosted Supabase instance and set `DATABASE_URL` in `server/.env`.
 
+Seeded administrator account
+- On first run (empty `users` table) the server seeds one ADMIN account. On an existing database nothing is created automatically — use the operator command below instead.
+- Create/verify the administrator at any time (idempotent and non-destructive — an existing account is never modified, passwords are never overwritten):
+
+```bash
+cd server
+npm run seed
+```
+
+- The command prints the account's `users.user_id`, username, role and status, so you always know exactly which admin id was seeded.
+- Defaults: username `admin`, password `admin123`, full name `System Administrator`.
+- Override with optional env vars: `ADMIN_USERNAME`, `ADMIN_PASSWORD`, `ADMIN_FULL_NAME`, and `ADMIN_USER_ID` (forces a specific `users.user_id`; it must be a free id — the sequence is realigned automatically).
+- Change the password right after the first sign-in (Settings → Users), or reset it from there later.
+
 Developer scripts (how to run)
 - Regenerate Inventory page (writes `client/src/pages/Inventory.jsx`):
 	- `node client/scripts/generate_inventory.js`

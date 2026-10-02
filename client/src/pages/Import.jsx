@@ -18,6 +18,7 @@ const STATUS_META = {
   duplicate: { cls: 'imp-badge duplicate', label: 'Duplicate' },
   error: { cls: 'imp-badge error', label: 'Missing data' },
   supplier_issue: { cls: 'imp-badge supplier', label: 'Supplier issue' },
+  not_found: { cls: 'imp-badge error', label: 'Medicine not found' },
 };
 
 /* Minimal quoted-CSV parser (handles "a,b", ""-escapes and CRLF). */
@@ -100,6 +101,8 @@ function actionLabel(row, mode) {
     if (!row.medicine_id) return 'New Medicine';
     return 'Update Existing';
   }
+  if (!row.medicine_id && !row.data.mapped_medicine_id) return 'Medicine not found — action required';
+  if (row.data.mapped_medicine_id) return 'Mapped to existing medicine';
   if (!row.medicine_id) return 'New Medicine + Batch';
   if (row.duplicate && row.batch_id) {
     const qty = Number(row.data.quantity) || 0;
@@ -115,6 +118,7 @@ export const Import = () => {
 
   const [rows, setRows] = useState([]);            // editable preview rows
   const [suppliers, setSuppliers] = useState([]);  // registered suppliers
+  const [medicines, setMedicines] = useState([]);  // targets for explicit resupply mapping
   const [parsing, setParsing] = useState(false);
   const [filter, setFilter] = useState('ALL');
   const [page, setPage] = useState(1);
@@ -149,6 +153,7 @@ export const Import = () => {
     suppliersAPI.getAll({ status: 'ACTIVE' })
       .then((res) => setSuppliers(Array.isArray(res.data) ? res.data : []))
       .catch(() => {});
+    medicinesAPI.getAll().then((res) => setMedicines(Array.isArray(res.data) ? res.data : [])).catch(() => {});
     // Restore a saved draft import if the user left mid-workflow.
     try {
       const draft = JSON.parse(localStorage.getItem(DRAFT_KEY) || 'null');
@@ -311,7 +316,7 @@ export const Import = () => {
       const data = { ...r.data, [field]: value };
       const { issues, supplierOk } = localValidate(data, suppliers, mode);
       const batchUnchanged = squash(data.batch_number) === squash(r.data.batch_number);
-      const status = issues.length > 0 ? 'error' : (!supplierOk ? 'supplier_issue' : (r.duplicate && batchUnchanged ? 'duplicate' : 'ready'));
+      const status = issues.length > 0 ? 'error' : (!supplierOk ? 'supplier_issue' : (!r.medicine_id && mode === 'batch' && !data.mapped_medicine_id && String(data.create_medicine).toLowerCase() !== 'true' ? 'not_found' : (r.duplicate && batchUnchanged ? 'duplicate' : 'ready')));
       return { ...r, data, issues, status };
     }));
   };
@@ -459,7 +464,7 @@ export const Import = () => {
           <p>
             {mode === 'medicine'
               ? 'Medicine master data — registering a medicine does NOT add stock.'
-              : 'Medicines, batches and incoming stock — new batches, restocks and resupply.'}
+              : 'Incoming stock for existing medicines — map unknown rows or explicitly create a medicine.'}
           </p>
         </div>
         <div style={{ display: 'flex', gap: '0.5rem', flexWrap: 'wrap' }}>
@@ -470,7 +475,7 @@ export const Import = () => {
               onClick={() => setMode('medicine')}
               title="Medicine master data (no stock)"
             >
-              <Pill size={15} /> <span className="hide-sm">Medicines</span>
+              <Pill size={15} /> <span className="hide-sm"> New Medicine</span>
             </button>
             <button
               type="button"
@@ -478,7 +483,7 @@ export const Import = () => {
               onClick={() => setMode('batch')}
               title="New batch / restock existing batch"
             >
-              <PackagePlus size={15} /> <span className="hide-sm">Batch / Resupply</span>
+              <PackagePlus size={15} /> <span className="hide-sm"> Resupply</span>
             </button>
           </div>
           <button className="btn btn-secondary" onClick={downloadTemplate}>
@@ -494,7 +499,7 @@ export const Import = () => {
           <p>
             {mode === 'medicine'
               ? 'Register new medicine master data. Duplicates (Generic + Brand + Strength) are detected after normalization — nothing is imported twice by accident.'
-              : 'The row decides what happens: medicine found + new batch number → NEW BATCH; medicine found + existing batch → RESTOCK (stock adds up, never a duplicate batch); unknown medicine → NEW MEDICINE + BATCH.'}
+              : 'Existing medicine + new batch → NEW BATCH; existing medicine + existing batch → RESTOCK. Unknown medicines are locked until you map, create, or skip them.'}
           </p>
           <div className="import-hero__buttons">
             <label className="btn btn-primary">
@@ -527,7 +532,7 @@ export const Import = () => {
               </label>
             </div>
             <div className="import-filters">
-              {[['ALL', `All ${counts.ALL}`], ['ready', `Ready ${counts.ready}`], ['duplicate', `Duplicate ${counts.duplicate}`], ['error', `Missing ${counts.error}`], ['supplier_issue', `Supplier ${counts.supplier_issue}`]].map(([key, label]) => (
+              {[['ALL', `All ${counts.ALL}`], ['ready', `Ready ${counts.ready}`], ['duplicate', `Duplicate ${counts.duplicate}`], ['not_found', `Not found ${rows.filter((r) => r.status === 'not_found').length}`], ['error', `Missing ${counts.error}`], ['supplier_issue', `Supplier ${counts.supplier_issue}`]].map(([key, label]) => (
                 <button key={key} className={`imp-chip ${filter === key ? 'active' : ''}`} onClick={() => { setFilter(key); setPage(1); }}>
                   {label}
                 </button>
@@ -575,6 +580,23 @@ export const Import = () => {
 
             {expandedRow === row.row_index && (
               <div className="import-row__editor">
+                {mode === 'batch' && !row.medicine_id && (
+                  <div className="imp-duplicate-bar">
+                    <span>Medicine not found. Choose an explicit action:</span>
+                    <select
+                      className="form-control"
+                      value={row.data.mapped_medicine_id || ''}
+                      onChange={(e) => updateRow(row.row_index, 'mapped_medicine_id', e.target.value)}
+                    >
+                      <option value="">Map to existing medicine…</option>
+                      {medicines.map((m) => <option key={m.medicine_id} value={m.medicine_id}>{m.generic_name} {m.brand_name ? `(${m.brand_name})` : ''} {m.strength || ''}</option>)}
+                    </select>
+                    <button className={`imp-chip ${String(row.data.create_medicine).toLowerCase() === 'true' ? 'active' : ''}`} onClick={() => updateRow(row.row_index, 'create_medicine', String(String(row.data.create_medicine).toLowerCase() !== 'true'))}>
+                      {String(row.data.create_medicine).toLowerCase() === 'true' ? 'Create Medicine approved' : 'Create Medicine'}
+                    </button>
+                    <button className="imp-chip" onClick={() => setRows((prev) => prev.map((x) => x.row_index === row.row_index ? { ...x, status: 'skipped' } : x))}>Skip</button>
+                  </div>
+                )}
                 {/* Medicine mode: resolve duplicates explicitly — never silently. */}
                 {mode === 'medicine' && row.status === 'duplicate' && (
                   <div className="imp-duplicate-bar">

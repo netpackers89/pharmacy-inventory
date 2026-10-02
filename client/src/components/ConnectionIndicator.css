@@ -1,0 +1,59 @@
+/* Connection status pill — deliberately small and quiet so it never competes
+   with the real content of the page. Uses the existing design tokens so it
+   matches both light and dark themes automatically. */
+
+.conn-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.22rem 0.55rem;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface-alt);
+  color: var(--text-muted);
+  font-size: 0.7rem;
+  font-weight: 600;
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: default;
+  transition: background var(--transition-fast), color var(--transition-fast);
+}
+
+/* The online state is calm green — the normal case needs no attention. */
+.conn-badge--synced {
+  color: var(--success);
+  background: var(--success-bg);
+  border-color: var(--success-border);
+}
+
+/* Syncing — a gentle, informative blue. */
+.conn-badge--syncing {
+  color: var(--info);
+  background: var(--info-bg);
+  border-color: var(--info-border);
+  cursor: progress;
+}
+
+/* Offline — amber, not red: being offline is a normal, recoverable state
+   for a field pharmacy, not an error. The app keeps working from cache. */
+.conn-badge--offline {
+  color: var(--warning);
+  background: var(--warning-bg);
+  border-color: var(--warning-border);
+}
+
+/* Only the online variants are clickable (they trigger a manual sync). */
+button.conn-badge:not(:disabled):hover {
+  background: var(--surface-hover);
+}
+
+button.conn-badge:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+
+/* Very small phones: show the dot, drop the word. */
+@media (max-width: 420px) {
+  .conn-badge__label { display: none; }
+  .conn-badge { padding: 0.28rem; }
+}

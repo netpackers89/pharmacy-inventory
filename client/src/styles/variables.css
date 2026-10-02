@@ -145,6 +145,219 @@
   color-scheme: dark;
 }
 
+/* ===================================================
+   THEME PALETTES
+   Applied on top of the base light/dark tokens above.
+   These blocks come LAST so they win on equal specificity
+   ([data-theme="dark"] and [data-palette="…"] both weigh 0,1,0).
+   A palette only redefines brand colours + surfaces, so every
+   component keeps working through the existing CSS variables.
+   =================================================== */
+
+/* ── LIGHT PALETTES ────────────────────────────────────────────────── */
+[data-palette="clinical-mint"] {
+  --bg-main: #F8FAFC;
+  --surface: #FFFFFF;
+  --surface-alt: #F1F5F9;
+  --surface-hover: #EEF2F7;
+  --border: #E2E8F0;
+  --border-strong: #CBD5E1;
+  --text-main: #0F172A;
+  --text-secondary: #334155;
+  --text-muted: #64748B;
+  --primary: #0EA5E9;
+  --primary-hover: #0284C7;
+  --primary-text: #FFFFFF;
+  --secondary: #10B981;
+  --focus-ring: rgba(14, 165, 233, 0.22);
+  --accent-subtle: #E0F2FE;
+  --sidebar-bg: #FFFFFF;
+  --sidebar-surface: #F8FAFC;
+  --sidebar-hover: #EEF2F7;
+  --sidebar-active-bg: #0EA5E9;
+  --sidebar-text: #475569;
+  --header-bg: rgba(248, 250, 252, 0.88);
+  color-scheme: light;
+}
+
+[data-palette="caduceus-blue"] {
+  --bg-main: #F0F4F8;
+  --surface: #FFFFFF;
+  --surface-alt: #E8EEF6;
+  --surface-hover: #E1E9F3;
+  --border: #D7E0EC;
+  --border-strong: #C2CFDF;
+  --text-main: #1E293B;
+  --text-secondary: #3B4A60;
+  --text-muted: #64748B;
+  --primary: #2563EB;
+  --primary-hover: #1D4ED8;
+  --primary-text: #FFFFFF;
+  --secondary: #059669;
+  --focus-ring: rgba(37, 99, 235, 0.22);
+  --accent-subtle: #DBEAFE;
+  --sidebar-bg: #FFFFFF;
+  --sidebar-surface: #F0F4F8;
+  --sidebar-hover: #E4ECF6;
+  --sidebar-active-bg: #2563EB;
+  --sidebar-text: #475569;
+  --header-bg: rgba(240, 244, 248, 0.88);
+  color-scheme: light;
+}
+
+[data-palette="nordic-sage"] {
+  --bg-main: #F4F7F5;
+  --surface: #FFFFFF;
+  --surface-alt: #ECF2EE;
+  --surface-hover: #E4EDE7;
+  --border: #DCE7E0;
+  --border-strong: #C4D5CB;
+  --text-main: #132E2B;
+  --text-secondary: #2F4F49;
+  --text-muted: #5F7A74;
+  --primary: #0F766E;
+  --primary-hover: #0B5D57;
+  --primary-text: #FFFFFF;
+  --secondary: #84CC16;
+  --focus-ring: rgba(15, 118, 110, 0.22);
+  --accent-subtle: #D9EFE9;
+  --sidebar-bg: #FFFFFF;
+  --sidebar-surface: #F4F7F5;
+  --sidebar-hover: #E7EFEA;
+  --sidebar-active-bg: #0F766E;
+  --sidebar-text: #47635C;
+  --header-bg: rgba(244, 247, 245, 0.88);
+  color-scheme: light;
+}
+
+[data-palette="mono-bw"] {
+  --bg-main: #FFFFFF;
+  --surface: #FFFFFF;
+  --surface-alt: #F5F5F5;
+  --surface-hover: #EBEBEB;
+  --border: #D9D9D9;
+  --border-strong: #BFBFBF;
+  --text-main: #000000;
+  --text-secondary: #2B2B2B;
+  --text-muted: #5A5A5A;
+  --primary: #111827;
+  --primary-hover: #374151;
+  --primary-text: #FFFFFF;
+  --secondary: #4B5563;
+  --focus-ring: rgba(17, 24, 39, 0.22);
+  --accent-subtle: #EFEFEF;
+  --sidebar-bg: #FFFFFF;
+  --sidebar-surface: #F5F5F5;
+  --sidebar-hover: #EBEBEB;
+  --sidebar-active-bg: #111827;
+  --sidebar-text: #3F3F46;
+  --header-bg: rgba(255, 255, 255, 0.9);
+  color-scheme: light;
+}
+
+/* ── DARK PALETTES ─────────────────────────────────────────────────── */
+[data-palette="midnight-rx"] {
+  --bg-main: #0B132B;
+  --surface: #1C2541;
+  --surface-alt: #223055;
+  --surface-hover: #2A3A64;
+  --border: #2E3A5C;
+  --border-strong: #3C4A70;
+  --dot-grid-color: rgba(255, 255, 255, 0.05);
+
+  --text-main: #F1F5F9;
+  --text-secondary: #C7D2E4;
+  --text-muted: #94A3B8;
+  --text-faint: #6B7A94;
+
+  --primary: #38BDF8;
+  --primary-hover: #7DD3FC;
+  --primary-text: #08182C;
+  --secondary: #34D399;
+  --focus-ring: rgba(56, 189, 248, 0.25);
+  --accent-subtle: #24345C;
+
+  --sidebar-bg: #0F1A38;
+  --sidebar-surface: #1C2541;
+  --sidebar-hover: #26355C;
+  --sidebar-active-bg: #38BDF8;
+  --sidebar-text: #A8B7D0;
+  --sidebar-text-active: #08182C;
+  --header-bg: rgba(11, 19, 43, 0.88);
+  color-scheme: dark;
+}
+
+[data-palette="cyber-apothecary"] {
+  --bg-main: #121212;
+  --surface: #1E1E2E;
+  --surface-alt: #252538;
+  --surface-hover: #2D2D43;
+  --border: #33334A;
+  --border-strong: #44445F;
+  --dot-grid-color: rgba(45, 212, 191, 0.05);
+
+  --text-main: #E2E8F0;
+  --text-secondary: #C3CAD8;
+  --text-muted: #939BB0;
+  --text-faint: #6E7689;
+
+  --primary: #2DD4BF;
+  --primary-hover: #5EEAD4;
+  --primary-text: #08201D;
+  --secondary: #A855F7;
+  --focus-ring: rgba(45, 212, 191, 0.25);
+  --accent-subtle: #25344A;
+
+  --sidebar-bg: #16161F;
+  --sidebar-surface: #1E1E2E;
+  --sidebar-hover: #2A2A40;
+  --sidebar-active-bg: #2DD4BF;
+  --sidebar-text: #9AA3B8;
+  --sidebar-text-active: #08201D;
+  --header-bg: rgba(18, 18, 18, 0.88);
+  color-scheme: dark;
+}
+
+[data-palette="dracula-slate"] {
+  --bg-main: #181825;
+  --surface: #1E1E2E;
+  --surface-alt: #26263A;
+  --surface-hover: #303046;
+  --border: #34344D;
+  --border-strong: #44445F;
+  --dot-grid-color: rgba(137, 180, 250, 0.06);
+
+  --text-main: #CDD6F4;
+  --text-secondary: #BAC2DE;
+  --text-muted: #9399B8;
+  --text-faint: #6C7093;
+
+  --primary: #89B4FA;
+  --primary-hover: #A6C8FF;
+  --primary-text: #1B1B2A;
+  --secondary: #A6E3A1;
+  --focus-ring: rgba(137, 180, 250, 0.25);
+  --accent-subtle: #2B2B45;
+
+  --sidebar-bg: #1A1A28;
+  --sidebar-surface: #1E1E2E;
+  --sidebar-hover: #2C2C45;
+  --sidebar-active-bg: #89B4FA;
+  --sidebar-text: #9AA2C4;
+  --sidebar-text-active: #1B1B2A;
+  --header-bg: rgba(24, 24, 37, 0.88);
+  color-scheme: dark;
+}
+
+/* ── Pharmacy status palette (shared by every theme) ───────────────── */
+:root {
+  --status-in-stock: #10B981;
+  --status-low-stock: #F59E0B;
+  --status-out-of-stock: #EF4444;
+  --status-expiring: #8B5CF6;
+  --status-controlled: #06B6D4;
+}
+
 /* Legacy aliases kept so existing pages keep working */
 :root {
   --primary-light: var(--accent-subtle);

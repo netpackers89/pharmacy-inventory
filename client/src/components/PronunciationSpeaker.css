@@ -1,65 +1,120 @@
-/* ── PronunciationSpeaker: accessible, touch-friendly TTS button ── */
+/* ── PronunciationSpeaker ────────────────────────────────────────────────
+   Icon-based TTS buttons for English (EN) and Amharic (አማ).
+   Uses the shared design tokens so it follows the light/dark theme.
+   ────────────────────────────────────────────────────────────────────── */
+
+.pron-speaker-wrap {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
 .pron-speaker {
   display: inline-flex;
   align-items: center;
-  gap: 0.45rem;
-  min-height: 48px;            /* WCAG tap-target minimum on mobile */
-  min-width: 48px;
-  padding: 0.4rem 0.7rem;
+  justify-content: center;
+  gap: 0.35rem;
+  min-height: 40px;              /* touch-friendly */
+  min-width: 40px;
+  padding: 0.35rem 0.6rem;
   border-radius: var(--radius-sm, 8px);
   border: 1px solid var(--border-strong, #d4d9e2);
   background: var(--surface, #ffffff);
   color: var(--text-main, #16181d);
-  font-size: 0.82rem;
-  font-weight: 600;
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.01em;
   cursor: pointer;
   vertical-align: middle;
   transition: var(--transition-fast, 150ms ease);
 }
+.pron-speaker:hover { background: var(--surface-hover, #eef0f4); }
 .pron-speaker:focus-visible {
   outline: 2px solid var(--info, #1d4ed8);
   outline-offset: 2px;
 }
-.pron-speaker:hover {
-  background: var(--surface-hover, #eef0f4);
-}
-.pron-speaker__icon {
-  display: inline-flex;
-  align-items: center;
-  font-size: 1.1em;
-  line-height: 1;
-}
-.pron-speaker__label { white-space: nowrap; }
-.pron-speaker__pulse {
-  width: 9px;
-  height: 9px;
-  border-radius: 50%;
-  background: var(--info, #1d4ed8);
-  display: inline-block;
-  animation: pron-pulse 1.4s ease-in-out infinite;
-}
-@keyframes pron-pulse {
-  0%, 100% { opacity: 0.55; transform: scale(0.9); }
-  50% { opacity: 1; transform: scale(1.2); }
-}
-/* Speaking state — blue accent for clear feedback */
+.pron-speaker:active { transform: translateY(1px); }
+
+.pron-speaker__svg { flex: 0 0 auto; }
+.pron-speaker__label { white-space: nowrap; line-height: 1; }
+
+/* Playing: highlighted + stop icon */
 .pron-speaker--speaking {
   background: var(--info-bg, #eff4ff);
   border-color: var(--info, #1d4ed8);
   color: var(--info, #1d4ed8);
 }
-.pron-speaker__status {
-  margin-left: 0.25rem;
-  font-size: 0.72rem;
-  font-weight: 600;
+
+/* No voice for this language on the device — still clickable (shows why) */
+.pron-speaker--missing {
+  border-style: dashed;
+  border-color: var(--warning, #b45309);
+  color: var(--warning, #b45309);
 }
+
+.pron-speaker__badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 2px;
+  border-radius: 999px;
+  background: var(--warning-bg, #fef3c7);
+  color: var(--warning, #b45309);
+  font-size: 0.62rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+.pron-speaker__pulse {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+  animation: pron-pulse 1.1s ease-in-out infinite;
+}
+@keyframes pron-pulse {
+  0%, 100% { opacity: 0.4; transform: scale(0.85); }
+  50% { opacity: 1; transform: scale(1.25); }
+}
+
 .pron-speaker__note {
-  margin-left: 0.35rem;
-  font-size: 0.72rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.68rem;
   font-weight: 500;
   color: var(--text-muted, #64748b);
+  line-height: 1.25;
 }
-.pron-speaker--unused { opacity: 0.55; cursor: not-allowed; }
+.pron-speaker__note--live { color: var(--info, #1d4ed8); font-weight: 600; }
+
+/* Unsupported browser: informational, not a button */
+.pron-speaker--unsupported {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  padding: 0.3rem 0.5rem;
+  border: 1px dashed var(--border-strong, #d4d9e2);
+  border-radius: var(--radius-sm, 8px);
+  color: var(--text-muted, #64748b);
+  font-size: 0.7rem;
+  font-weight: 600;
+  cursor: default;
+}
+
+/* Compact variant (medicine cards / table rows) */
+.pron-speaker--compact { min-height: 32px; min-width: 32px; padding: 0.2rem 0.45rem; font-size: 0.72rem; }
+
+/* ── Medicine detail modal: the wrapper must own the "speaker" grid cell ── */
+.lm__pron-row .pron-speaker-wrap { grid-area: speaker; justify-content: flex-end; }
+.lm__pron-row .pron-speaker__note { display: none; } /* keep the row compact — badge + tooltip explain */
+.lm__pron-row .pron-speaker { min-height: 40px; min-width: 40px; padding: 0.25rem 0.5rem; }
+
 @media (max-width: 560px) {
-  .pron-speaker { min-height: 48px; padding: 0.5rem 0.8rem; }
+  .pron-speaker { min-height: 44px; min-width: 44px; padding: 0.45rem 0.7rem; }
+  .pron-speaker__note { flex-basis: 100%; }
 }

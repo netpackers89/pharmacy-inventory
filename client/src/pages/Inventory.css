@@ -429,3 +429,69 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* ===================================================
+   FORMAL BIN CARD (Stock Keep Control Form)
+   The ledger mirrors the official form: a two-row header where the four
+   quantity columns sit under one "Quantity" heading.
+   =================================================== */
+.bincard-form-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+}
+
+.bincard-form {
+  min-width: 1180px;           /* scroll instead of squashing columns */
+  width: 100%;
+  font-size: 0.8rem;
+}
+
+.bincard-form thead th {
+  background: var(--surface-alt);
+  border: 1px solid var(--border-strong);
+  text-align: center;
+  vertical-align: middle;
+  white-space: nowrap;
+  font-size: 0.72rem;
+  letter-spacing: 0.02em;
+}
+
+.bincard-form .bincard-group {
+  background: var(--primary);
+  color: var(--primary-text);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  border: 1px solid var(--border-strong);
+}
+
+.bincard-form th.num,
+.bincard-form td.num { text-align: right; }
+
+.bincard-form tbody td {
+  border: 1px solid var(--border);
+  vertical-align: top;
+  padding: 0.4rem 0.5rem;
+  white-space: nowrap;
+}
+
+.bincard-form tbody tr:nth-child(even) { background: var(--surface-alt); }
+
+/* ── Print: a formal black-on-white document, regardless of theme ────── */
+@media print {
+  .bincard-form-wrap { overflow: visible; }
+  .bincard-form { min-width: 0; font-size: 8pt; }
+  .bincard-form thead th,
+  .bincard-form .bincard-group,
+  .bincard-form tbody td,
+  .bincard-form tbody tr:nth-child(even) {
+    background: #fff !important;
+    color: #000 !important;
+    border-color: #000 !important;
+  }
+  .bincard-form thead { display: table-header-group; } /* repeat header per page */
+  .bincard-form tr { page-break-inside: avoid; }
+  .bincard-toolbar,
+  .bincard-identity__img,
+  .bincard-batch-row { display: none !important; }
+  @page { size: landscape; margin: 12mm; }
+}

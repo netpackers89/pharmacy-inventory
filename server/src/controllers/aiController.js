@@ -30,6 +30,21 @@ exports.autofill = async (req, res) => {
 };
 
 /*
+ * AI STATUS
+ * Secret-free diagnostic for staff / deployment debugging: tells you whether a
+ * credential is present, what kind it is (permanent API key vs short-lived
+ * OAuth token) and which model will be used. It NEVER returns the key itself.
+ */
+exports.status = async (req, res) => {
+  const status = aiService.describeAiStatus();
+  res.json({
+    ...status,
+    ready: status.configured && status.credential_is_permanent_api_key,
+    checked_at: new Date().toISOString(),
+  });
+};
+
+/*
  * LEGACY interaction endpoint — now backed by the LOCAL DDI dataset so any
  * existing callers get deterministic, auditable results instead of asking
  * an AI model to invent interactions.

@@ -2,7 +2,7 @@ const db = require('../config/db');
 const crypto = require('crypto');
 const fs = require('fs/promises');
 const path = require('path');
-const { getArchiveOverview, ARCHIVE_DIR } = require('../services/auditArchiveService');
+const { getArchiveOverview, acknowledgeArchive, cleanupApprovedArchive, ARCHIVE_DIR } = require('../services/auditArchiveService');
 
 /*
  * Shared filter builder — the list endpoint and the CSV export use EXACTLY
@@ -224,5 +224,25 @@ exports.downloadArchive = async (req, res) => {
     if (err.code === 'ENOENT') return res.status(404).json({ error: 'Archive file is unavailable' });
     console.error('[AUDIT_ARCHIVE_DOWNLOAD]', err.message);
     return res.status(500).json({ error: 'Unable to download archive' });
+  }
+};
+
+exports.acknowledgeArchive = async (req, res) => {
+  try {
+    const result = await acknowledgeArchive(req.params.id, req.user.user_id);
+    await req.auditLog?.(req.user.user_id, 'ARCHIVE_ACKNOWLEDGED', 'SECURITY', { description: `Acknowledged archive ${req.params.id}` });
+    return res.json({ success: true, approvalCount: result.rows[0].count, requiredApprovals: 2 });
+  } catch (err) {
+    return res.status(400).json({ success: false, error: err.message });
+  }
+};
+
+exports.cleanupArchive = async (req, res) => {
+  try {
+    const result = await cleanupApprovedArchive(req.params.id);
+    await req.auditLog?.(req.user.user_id, 'ARCHIVE_CLEANUP_COMPLETED', 'SECURITY', { description: `Cleaned ${result.deleted} archived audit log(s) from archive ${req.params.id}` });
+    return res.json({ success: true, ...result });
+  } catch (err) {
+    return res.status(err.message.includes('locked') ? 423 : 400).json({ success: false, error: err.message });
   }
 };
